@@ -52,7 +52,7 @@ class MessageMixin(ClientProtocol):
         try:
             self.logger.info("Uploading file")
 
-            payload = UploadPayload().model_dump(by_alias=True)
+            payload = UploadPayload().to_dict()
             data = await self._send_and_wait(
                 opcode=Opcode.FILE_UPLOAD,
                 payload=payload,
@@ -176,7 +176,7 @@ class MessageMixin(ClientProtocol):
     async def _upload_video(self, video: Video) -> None | Attach:
         try:
             self.logger.info("Uploading video")
-            payload = UploadPayload().model_dump(by_alias=True)
+            payload = UploadPayload().to_dict()
             data = await self._send_and_wait(
                 opcode=Opcode.VIDEO_UPLOAD,
                 payload=payload,
@@ -254,7 +254,7 @@ class MessageMixin(ClientProtocol):
     async def _upload_photo(self, photo: Photo) -> None | Attach:
         try:
             self.logger.info("Uploading photo")
-            payload = UploadPayload().model_dump(by_alias=True)
+            payload = UploadPayload().to_dict()
 
             data = await self._send_and_wait(
                 opcode=Opcode.PHOTO_UPLOAD,
@@ -317,19 +317,17 @@ class MessageMixin(ClientProtocol):
         if isinstance(attach, Photo):
             uploaded = await self._upload_photo(attach)
             if uploaded and uploaded.photo_token:
-                return AttachPhotoPayload(photo_token=uploaded.photo_token).model_dump(
-                    by_alias=True
-                )
+                return AttachPhotoPayload(photo_token=uploaded.photo_token).to_dict()
         elif isinstance(attach, File):
             uploaded = await self._upload_file(attach)
             if uploaded and uploaded.file_id:
-                return AttachFilePayload(file_id=uploaded.file_id).model_dump(by_alias=True)
+                return AttachFilePayload(file_id=uploaded.file_id).to_dict()
         elif isinstance(attach, Video):
             uploaded = await self._upload_video(attach)
             if uploaded and uploaded.video_id and uploaded.token:
                 return VideoAttachPayload(
                     video_id=uploaded.video_id, token=uploaded.token
-                ).model_dump(by_alias=True)
+                ).to_dict()
         self.logger.error(f"Attachment upload failed for {attach}")
         return None
 
@@ -409,7 +407,7 @@ class MessageMixin(ClientProtocol):
                 link=(ReplyLink(message_id=str(reply_to)) if reply_to else None),
             ),
             notify=notify,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         if use_queue:
             await self._queue_message(opcode=Opcode.MSG_SEND, payload=payload)
@@ -497,7 +495,7 @@ class MessageMixin(ClientProtocol):
             text=clean_text if clean_text else text,
             elements=elements,
             attaches=attaches,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         if use_queue:
             await self._queue_message(opcode=Opcode.MSG_EDIT, payload=payload)
@@ -546,7 +544,7 @@ class MessageMixin(ClientProtocol):
 
         payload = DeleteMessagePayload(
             chat_id=chat_id, message_ids=message_ids, for_me=for_me
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         if use_queue:
             await self._queue_message(opcode=Opcode.MSG_DELETE, payload=payload)
@@ -578,7 +576,7 @@ class MessageMixin(ClientProtocol):
             chat_id=chat_id,
             notify_pin=notify_pin,
             pin_message_id=message_id,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_UPDATE, payload=payload)
 
@@ -625,7 +623,7 @@ class MessageMixin(ClientProtocol):
             from_time=from_time,
             forward=forward,
             backward=backward,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         self.logger.debug("Payload dict keys: %s", list(payload.keys()))
 
@@ -661,13 +659,13 @@ class MessageMixin(ClientProtocol):
         if self.is_connected and self._socket is not None:
             payload = GetVideoPayload(
                 chat_id=chat_id, message_id=message_id, video_id=video_id
-            ).model_dump(by_alias=True)
+            ).to_dict()
         else:
             payload = GetVideoPayload(
                 chat_id=chat_id,
                 message_id=str(message_id),
                 video_id=video_id,
-            ).model_dump(by_alias=True)
+            ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.VIDEO_PLAY, payload=payload)
 
@@ -703,13 +701,13 @@ class MessageMixin(ClientProtocol):
         if self.is_connected and self._socket is not None:
             payload = GetFilePayload(
                 chat_id=chat_id, message_id=message_id, file_id=file_id
-            ).model_dump(by_alias=True)
+            ).to_dict()
         else:
             payload = GetFilePayload(
                 chat_id=chat_id,
                 message_id=str(message_id),
                 file_id=file_id,
-            ).model_dump(by_alias=True)
+            ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.FILE_DOWNLOAD, payload=payload)
 
@@ -753,7 +751,7 @@ class MessageMixin(ClientProtocol):
                 chat_id=chat_id,
                 message_id=message_id,
                 reaction=ReactionInfoPayload(id=reaction),
-            ).model_dump(by_alias=True)
+            ).to_dict()
 
             data = await self._send_and_wait(opcode=Opcode.MSG_REACTION, payload=payload)
 
@@ -789,9 +787,7 @@ class MessageMixin(ClientProtocol):
             message_ids,
         )
 
-        payload = GetReactionsPayload(chat_id=chat_id, message_ids=message_ids).model_dump(
-            by_alias=True
-        )
+        payload = GetReactionsPayload(chat_id=chat_id, message_ids=message_ids).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.MSG_GET_REACTIONS, payload=payload)
 
@@ -829,7 +825,7 @@ class MessageMixin(ClientProtocol):
         payload = RemoveReactionPayload(
             chat_id=chat_id,
             message_id=message_id,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.MSG_CANCEL_REACTION, payload=payload)
 
@@ -868,7 +864,7 @@ class MessageMixin(ClientProtocol):
             chat_id=chat_id,
             message_id=str(message_id),
             mark=int(time.time() * 1000),
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_MARK, payload=payload)
 

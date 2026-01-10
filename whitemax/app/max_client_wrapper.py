@@ -6,6 +6,7 @@ Python обертка для Swift для работы с pymax.
 import asyncio
 import json
 import os
+import ssl
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -17,9 +18,11 @@ if _current_dir not in sys.path:
 PYMAX_AVAILABLE = False
 try:
     # Пытаемся импортировать pymax
-    from pymax import MaxClient
+    # Для iOS используем SocketMaxClient вместо MaxClient
+    from pymax import SocketMaxClient
     from pymax.payloads import UserAgentPayload
     from pymax.types import Chat, Message
+    from pymax.exceptions import SocketNotConnectedError, SocketSendError
     PYMAX_AVAILABLE = True
     print("✓ pymax imported successfully")
 except ImportError as e:
@@ -50,23 +53,24 @@ except ImportError as e:
     traceback.print_exc()
     
     # Устанавливаем заглушки
-    MaxClient = None
+    SocketMaxClient = None
     UserAgentPayload = None
     Chat = None
     Message = None
 
 
 class MaxClientWrapper:
-    """Синхронная обертка для MaxClient."""
+    """Синхронная обертка для SocketMaxClient (для iOS)."""
     
-    def __init__(self, phone: str, work_dir: Optional[str] = None):
+    def __init__(self, phone: str, work_dir: Optional[str] = None, token: Optional[str] = None):
         """
         Инициализация обертки.
         
         :param phone: Номер телефона
         :param work_dir: Рабочая директория для сохранения сессии
+        :param token: Токен авторизации (если есть сохраненная сессия)
         """
-        if MaxClient is None:
+        if SocketMaxClient is None:
             raise RuntimeError("pymax not available")
         
         # Определяем рабочую директорию
@@ -77,7 +81,8 @@ class MaxClientWrapper:
         
         self.phone = phone
         self.work_dir = work_dir
-        self.client: Optional[MaxClient] = None
+        self.token = token
+        self.client: Optional[SocketMaxClient] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         
     def _get_loop(self) -> asyncio.AbstractEventLoop:
@@ -92,28 +97,44 @@ class MaxClientWrapper:
     
     def _run_async(self, coro):
         """Запустить асинхронную функцию синхронно."""
-        loop = self._get_loop()
-        if loop.is_running():
-            # Если loop уже запущен, создаем новый task
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        else:
-            return loop.run_until_complete(coro)
+        try:
+            # Пытаемся получить текущий event loop
+            try:
+                loop = asyncio.get_running_loop()
+                # Если loop уже запущен, используем ThreadPoolExecutor для создания нового loop
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, coro)
+                    return future.result(timeout=60)  # Таймаут 60 секунд
+            except RuntimeError:
+                # Если loop не запущен, создаем новый и запускаем в нем
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(coro)
+                finally:
+                    loop.close()
+        except Exception as e:
+            print(f"Error in _run_async: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def create_client(self) -> Dict[str, Any]:
         """
-        Создать клиент MaxClient.
+        Создать клиент SocketMaxClient для iOS.
         
         :return: Dict с результатом инициализации
         """
         try:
-            ua = UserAgentPayload(device_type="WEB", app_version="25.12.13")
-            self.client = MaxClient(
+            # Для iOS используем SocketMaxClient с device_type="IOS"
+            # SocketMaxClient использует TCP Socket вместо WebSocket
+            ua = UserAgentPayload(device_type="IOS", app_version="25.12.14")
+            self.client = SocketMaxClient(
                 phone=self.phone,
                 work_dir=self.work_dir,
                 headers=ua,
+                token=self.token,  # Передаем токен если есть
                 reconnect=False,
             )
             return {"success": True, "message": "Client created"}
@@ -137,6 +158,22 @@ class MaxClientWrapper:
         
         try:
             async def _request():
+                # Сначала создаем клиент, если его нет
+                if self.client is None:
+                    result = self.create_client()
+                    if not result.get("success"):
+                        return result
+                
+                # Подключаемся к Socket, если еще не подключены или соединение потеряно
+                if not self.client.is_connected:
+                    try:
+                        await self.client.connect(self.client.user_agent)
+                    except Exception as conn_error:
+                        # Если соединение не удалось, пробуем еще раз
+                        await asyncio.sleep(0.5)  # Небольшая задержка перед повтором
+                        await self.client.connect(self.client.user_agent)
+                
+                # Запрашиваем код авторизации
                 temp_token = await self.client.request_code(phone, language)
                 return {"success": True, "temp_token": temp_token}
             
@@ -159,18 +196,115 @@ class MaxClientWrapper:
         
         try:
             async def _login():
-                await self.client.login_with_code(temp_token, code, start=False)
+                # Сначала создаем клиент, если его нет
+                if self.client is None:
+                    result = self.create_client()
+                    if not result.get("success"):
+                        return result
+                
+                # Убеждаемся, что Socket подключен
+                if not self.client.is_connected:
+                    print(f"⚠️ Socket not connected, connecting...")
+                    try:
+                        await self.client.connect(self.client.user_agent)
+                        print(f"✓ Socket connected")
+                    except Exception as conn_error:
+                        # Если соединение не удалось, пробуем еще раз
+                        print(f"✗ Connection failed: {conn_error}, retrying...")
+                        await asyncio.sleep(0.5)  # Небольшая задержка перед повтором
+                        await self.client.connect(self.client.user_agent)
+                        print(f"✓ Socket connected after retry")
+                else:
+                    print(f"✓ Socket already connected")
+                
+                # Небольшая задержка после подключения для полной инициализации сокета
+                await asyncio.sleep(0.2)
+                
+                # Авторизуемся с кодом с retry
+                max_retries = 3
+                retry_count = 0
+                last_error = None
+                
+                while retry_count < max_retries:
+                    try:
+                        print(f"📤 Attempting login with code (attempt {retry_count + 1}/{max_retries})...")
+                        
+                        # Проверяем соединение перед каждой попыткой
+                        if not self.client.is_connected:
+                            print(f"⚠️ Connection lost before login, reconnecting...")
+                            await self.client.connect(self.client.user_agent)
+                            await asyncio.sleep(0.2)
+                        
+                        await self.client.login_with_code(temp_token, code, start=False)
+                        print(f"✓ Login successful")
+                        break  # Успешно авторизовались
+                    except Exception as login_error:
+                        last_error = login_error
+                        error_str = str(login_error)
+                        error_type = type(login_error).__name__
+                        print(f"✗ Login failed (attempt {retry_count + 1}/{max_retries}): {error_type}: {login_error}")
+                        
+                        # Проверяем, является ли ошибка связанной с соединением
+                        connection_errors = [
+                            "SocketSendError", "SocketNotConnectedError", "SSLEOFError", 
+                            "SSLError", "ConnectionError", "not connected", "EOF", "Timeout"
+                        ]
+                        is_connection_error = any(err in error_type or err.lower() in error_str.lower() for err in connection_errors)
+                        
+                        if is_connection_error and retry_count < max_retries - 1:
+                            print(f"⚠️ Connection error detected ({error_type}), reconnecting and retrying...")
+                            retry_count += 1
+                            try:
+                                # Закрываем старое соединение
+                                if hasattr(self.client, '_socket') and self.client._socket:
+                                    try:
+                                        self.client._socket.close()
+                                    except:
+                                        pass
+                                self.client.is_connected = False
+                                
+                                # Переподключаемся с увеличивающейся задержкой
+                                await asyncio.sleep(0.5 * retry_count)
+                                await self.client.connect(self.client.user_agent)
+                                await asyncio.sleep(0.2)
+                                print(f"✓ Reconnected successfully, retrying login...")
+                                continue  # Пробуем еще раз
+                            except Exception as reconnect_error:
+                                print(f"✗ Reconnection failed: {reconnect_error}")
+                                if retry_count >= max_retries:
+                                    raise reconnect_error
+                        else:
+                            # Другие ошибки или последняя попытка - не повторяем
+                            if retry_count >= max_retries - 1:
+                                raise login_error
+                            retry_count += 1
+                            await asyncio.sleep(0.5 * retry_count)
+                
+                # Проверяем, успешно ли авторизовались
+                if not self.client.me:
+                    error_msg = f"Login completed but user info not available: {last_error}" if last_error else "Login failed: user info not available"
+                    print(f"✗ {error_msg}")
+                    return {"success": False, "error": error_msg}
+                
                 # Получаем информацию о текущем пользователе
                 me_info = None
                 if self.client.me:
+                    # Безопасно получаем first_name из names
+                    first_name = None
+                    if self.client.me.names and len(self.client.me.names) > 0:
+                        # Используем first_name, если есть, иначе name
+                        first_name = self.client.me.names[0].first_name or self.client.me.names[0].name
+                    
                     me_info = {
                         "id": self.client.me.id,
-                        "first_name": self.client.me.names[0].first_name if self.client.me.names else None,
+                        "first_name": first_name or "",  # Всегда строка, даже если пустая
+                        "phone": self.client.me.phone or self.phone,
                     }
                 return {
                     "success": True,
                     "token": self.client._token,
-                    "me": me_info,
+                    "phone": self.phone,  # Возвращаем номер телефона для сохранения
+                    "me": me_info,  # Может быть None, если me еще не загружен
                 }
             
             return self._run_async(_login())
@@ -179,38 +313,97 @@ class MaxClientWrapper:
     
     def get_chats(self) -> Dict[str, Any]:
         """
-        Получить список чатов.
+        Получить список чатов, диалогов и каналов.
         
-        :return: Dict со списком чатов
+        :return: Dict со списком всех чатов (dialogs, chats, channels)
         """
         if self.client is None:
             return {"success": False, "error": "Client not initialized"}
         
-        if not self.client.is_connected:
-            return {"success": False, "error": "Client not connected"}
-        
         try:
             async def _get_chats():
-                # Получаем все чаты
+                # Убеждаемся, что Socket подключен
+                if not self.client.is_connected:
+                    try:
+                        await self.client.connect(self.client.user_agent)
+                        # Если есть токен, нужно инициализировать сессию
+                        if self.client._token:
+                            await self.client._sync(self.client.user_agent)
+                            await self.client._post_login_tasks(sync=False)
+                    except Exception as conn_error:
+                        # Если соединение не удалось, пробуем еще раз
+                        await asyncio.sleep(0.5)
+                        await self.client.connect(self.client.user_agent)
+                        if self.client._token:
+                            await self.client._sync(self.client.user_agent)
+                            await self.client._post_login_tasks(sync=False)
+                elif self.client._token and not self.client.me:
+                    # Если подключены, но сессия не инициализирована, инициализируем
+                    await self.client._sync(self.client.user_agent)
+                    await self.client._post_login_tasks(sync=False)
+                
+                # Собираем все типы чатов: диалоги, чаты и каналы
+                all_chats = []
+                
+                # Добавляем диалоги
+                for dialog in self.client.dialogs:
+                    # Получаем название диалога (обычно имя собеседника)
+                    title = f"Dialog {dialog.id}"
+                    photo_id = None
+                    
+                    # Пытаемся получить имя из участников
+                    # Для диалога cid обычно ID собеседника
+                    if dialog.cid:
+                        try:
+                            # Получаем пользователя по ID из _users
+                            if dialog.cid in self.client._users:
+                                user = self.client._users[dialog.cid]
+                                if user.names and len(user.names) > 0:
+                                    # Используем name, если есть, иначе first_name
+                                    title = user.names[0].name or user.names[0].first_name or f"User {dialog.cid}"
+                                photo_id = user.photo_id  # User имеет photo_id
+                        except Exception:
+                            pass
+                    
+                    chat_dict = {
+                        "id": dialog.id,
+                        "title": title,
+                        "type": "DIALOG",
+                        "photo_id": photo_id,  # Для диалога берем photo_id из User
+                        "icon_url": None,  # Dialog не имеет icon_url
+                        "unread_count": 0,  # Dialog не имеет unread_count
+                        "cid": dialog.cid,
+                    }
+                    all_chats.append(chat_dict)
+                
+                # Добавляем чаты (группы)
                 chat_ids = [chat.id for chat in self.client.chats]
                 if chat_ids:
                     chats = await self.client.get_chats(chat_ids)
-                else:
-                    chats = []
+                    for chat in chats:
+                        chat_dict = {
+                            "id": chat.id,
+                            "title": chat.title or "",
+                            "type": "CHAT",
+                            "photo_id": None,  # Chat не имеет photo_id, использует base_icon_url
+                            "icon_url": chat.base_icon_url,
+                            "unread_count": 0,  # Chat не имеет unread_count
+                        }
+                        all_chats.append(chat_dict)
                 
-                # Конвертируем в JSON-совместимый формат
-                chats_list = []
-                for chat in chats:
+                # Добавляем каналы (Channel наследуется от Chat)
+                for channel in self.client.channels:
                     chat_dict = {
-                        "id": chat.id,
-                        "title": chat.title,
-                        "type": chat.type.value if hasattr(chat.type, 'value') else str(chat.type),
-                        "photo_id": chat.photo_id,
-                        "unread_count": chat.unread_count,
+                        "id": channel.id,
+                        "title": channel.title or "",
+                        "type": "CHANNEL",
+                        "photo_id": None,  # Channel не имеет photo_id, использует base_icon_url
+                        "icon_url": channel.base_icon_url,
+                        "unread_count": 0,  # Channel не имеет unread_count
                     }
-                    chats_list.append(chat_dict)
+                    all_chats.append(chat_dict)
                 
-                return {"success": True, "chats": chats_list}
+                return {"success": True, "chats": all_chats}
             
             return self._run_async(_get_chats())
         except Exception as e:
@@ -227,25 +420,182 @@ class MaxClientWrapper:
         if self.client is None:
             return {"success": False, "error": "Client not initialized"}
         
-        if not self.client.is_connected:
-            return {"success": False, "error": "Client not connected"}
-        
         try:
             async def _get_messages():
-                messages = await self.client.fetch_history(chat_id=chat_id, limit=limit)
+                # Вспомогательная функция для переподключения и инициализации сессии
+                async def _ensure_connected():
+                    """Убедиться, что соединение установлено и сессия инициализирована."""
+                    if not self.client.is_connected:
+                        print(f"⚠️ Socket not connected, connecting...")
+                        try:
+                            # Закрываем старое соединение если есть
+                            if hasattr(self.client, '_socket') and self.client._socket:
+                                try:
+                                    self.client._socket.close()
+                                except:
+                                    pass
+                            self.client.is_connected = False
+                            
+                            await self.client.connect(self.client.user_agent)
+                            print(f"✓ Socket connected")
+                            
+                            # Если есть токен, нужно инициализировать сессию
+                            if self.client._token:
+                                print(f"⚠️ Token found, initializing session...")
+                                await self.client._sync(self.client.user_agent)
+                                await self.client._post_login_tasks(sync=False)
+                                print(f"✓ Session initialized")
+                        except Exception as conn_error:
+                            print(f"✗ Connection failed: {conn_error}, retrying...")
+                            # Если соединение не удалось, пробуем еще раз
+                            await asyncio.sleep(0.5)
+                            await self.client.connect(self.client.user_agent)
+                            if self.client._token:
+                                await self.client._sync(self.client.user_agent)
+                                await self.client._post_login_tasks(sync=False)
+                    elif self.client._token and not self.client.me:
+                        # Если подключены, но сессия не инициализирована, инициализируем
+                        print(f"⚠️ Socket connected but session not initialized, initializing...")
+                        await self.client._sync(self.client.user_agent)
+                        await self.client._post_login_tasks(sync=False)
+                        print(f"✓ Session initialized")
                 
-                # Конвертируем в JSON-совместимый формат
+                # Убеждаемся, что Socket подключен и сессия инициализирована
+                await _ensure_connected()
+                
+                # fetch_history использует backward для количества сообщений
+                # Обрабатываем ошибки соединения и переподключаемся при необходимости
+                max_retries = 3
+                retry_count = 0
+                messages = None
+                last_error = None
+                
+                while retry_count < max_retries:
+                    try:
+                        # Проверяем соединение перед каждой попыткой
+                        if not self.client.is_connected:
+                            print(f"⚠️ Connection lost before fetch_history, reconnecting...")
+                            await _ensure_connected()
+                        
+                        messages = await self.client.fetch_history(chat_id=chat_id, backward=limit, forward=0)
+                        break  # Успешно получили сообщения
+                    except Exception as e:
+                        last_error = e
+                        error_str = str(e)
+                        error_type = type(e).__name__
+                        print(f"✗ Error fetching history for chat_id={chat_id} (attempt {retry_count + 1}/{max_retries}): {error_type}: {e}")
+                        
+                        # Проверяем, является ли ошибка связанной с соединением
+                        # Проверяем по типу исключения (если импортированы) и по строке
+                        is_connection_error = (
+                            (PYMAX_AVAILABLE and (isinstance(e, SocketNotConnectedError) or isinstance(e, SocketSendError))) or
+                            isinstance(e, ssl.SSLEOFError) or
+                            isinstance(e, ssl.SSLError) or
+                            isinstance(e, ConnectionError) or
+                            error_type in ["SocketNotConnectedError", "SocketSendError", "SSLEOFError", "SSLError", "ConnectionError"] or
+                            any(keyword in error_str.lower() for keyword in ["not connected", "socket", "eof", "connection", "send and wait failed"])
+                        )
+                        
+                        if is_connection_error:
+                            print(f"⚠️ Connection error detected ({error_type}), attempting to reconnect...")
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                try:
+                                    # Закрываем старое соединение
+                                    if hasattr(self.client, '_socket') and self.client._socket:
+                                        try:
+                                            self.client._socket.close()
+                                        except:
+                                            pass
+                                    self.client.is_connected = False
+                                    
+                                    # Переподключаемся с увеличивающейся задержкой
+                                    await asyncio.sleep(0.5 * retry_count)
+                                    await _ensure_connected()
+                                    
+                                    print(f"✓ Reconnected successfully, retrying fetch_history...")
+                                    continue  # Пробуем еще раз
+                                except Exception as reconnect_error:
+                                    print(f"✗ Reconnection failed: {reconnect_error}")
+                                    if retry_count >= max_retries:
+                                        import traceback
+                                        traceback.print_exc()
+                                        return {"success": False, "error": f"Failed to reconnect after {max_retries} attempts: {reconnect_error}"}
+                            else:
+                                # Последняя попытка не удалась
+                                import traceback
+                                traceback.print_exc()
+                                return {"success": False, "error": f"Failed after {max_retries} reconnection attempts: {e}"}
+                        else:
+                            # Другие ошибки - не повторяем
+                            print(f"✗ Non-connection error, not retrying: {error_type}")
+                            import traceback
+                            traceback.print_exc()
+                            return {"success": False, "error": str(e)}
+                
+                # Если после всех попыток не удалось получить сообщения
+                if messages is None:
+                    error_msg = f"Failed to fetch messages after {max_retries} attempts: {last_error}" if last_error else "Unknown error"
+                    print(f"✗ {error_msg}")
+                    return {"success": False, "error": error_msg}
+                
+                # Проверяем, что сообщения получены
+                if messages is None:
+                    print(f"⚠️ fetch_history returned None for chat_id={chat_id}")
+                    messages = []
+                
+                print(f"📨 Fetched {len(messages) if messages else 0} messages from API for chat_id={chat_id}")
+                
+                # Конвертируем в JSON-совместимый формат и сортируем по времени (старые первыми, новые последними)
                 messages_list = []
-                for msg in messages:
-                    msg_dict = {
-                        "id": str(msg.id),
-                        "chat_id": msg.chat_id,
-                        "text": msg.text or "",
-                        "sender_id": msg.sender_id if hasattr(msg, 'sender_id') else None,
-                        "date": msg.date if hasattr(msg, 'date') else None,
-                        "type": msg.type.value if hasattr(msg.type, 'value') else str(msg.type) if hasattr(msg, 'type') else None,
-                    }
-                    messages_list.append(msg_dict)
+                for idx, msg in enumerate(messages or []):
+                    try:
+                        # Безопасно получаем атрибуты сообщения
+                        msg_id = getattr(msg, 'id', None)
+                        if msg_id is None:
+                            print(f"⚠️ Message {idx} has no id, skipping")
+                            continue
+                        
+                        msg_text = getattr(msg, 'text', '') or ""
+                        msg_time = getattr(msg, 'time', None)
+                        msg_sender = getattr(msg, 'sender', None) or getattr(msg, 'sender_id', None)
+                        
+                        # Получаем chat_id из сообщения, если есть, иначе используем переданный
+                        msg_chat_id = getattr(msg, 'chat_id', None)
+                        if msg_chat_id is None:
+                            msg_chat_id = chat_id
+                        # Всегда гарантируем, что chat_id не None
+                        if msg_chat_id is None:
+                            print(f"⚠️ Message {idx} has no chat_id and none provided, skipping")
+                            continue
+                        
+                        msg_dict = {
+                            "id": str(msg_id),  # Всегда строка для совместимости
+                            "chat_id": msg_chat_id,  # Всегда число, не None
+                            "text": msg_text,
+                            "sender_id": msg_sender,
+                            "date": msg_time,  # Используем time для сортировки и отображения
+                            "time": msg_time,  # Добавляем time для сортировки
+                            "type": msg.type.value if hasattr(msg.type, 'value') else str(msg.type) if hasattr(msg, 'type') else None,
+                        }
+                        messages_list.append(msg_dict)
+                        print(f"  Message {idx}: id={msg_id}, text={msg_text[:30]}, time={msg_time}")
+                    except Exception as e:
+                        print(f"⚠️ Error processing message {idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+                
+                # Сортируем по времени (старые первыми, новые последними)
+                messages_list.sort(key=lambda x: x.get("time", 0) or 0)
+                
+                # Добавляем отладочную информацию
+                print(f"✓ Processed {len(messages_list)} messages for chat_id={chat_id}")
+                if messages_list:
+                    print(f"  First message: id={messages_list[0].get('id')}, text={messages_list[0].get('text', '')[:50]}")
+                    print(f"  Last message: id={messages_list[-1].get('id')}, text={messages_list[-1].get('text', '')[:50]}")
+                else:
+                    print(f"  ⚠️ No messages to return")
                 
                 return {"success": True, "messages": messages_list}
             
@@ -266,25 +616,41 @@ class MaxClientWrapper:
         
         try:
             async def _start():
-                # Запускаем клиент в фоне, но не ждем бесконечно
+                # Подключаемся к Socket
                 await self.client.connect(self.client.user_agent)
                 
-                # Если есть сохраненный токен, используем его
+                # Если есть сохраненный токен, используем его для синхронизации
                 if self.client._token:
+                    # Синхронизируем состояние с сервером
                     await self.client._sync(self.client.user_agent)
                     await self.client._post_login_tasks(sync=False)
+                    
+                    # Получаем информацию о пользователе
+                    me_info = None
+                    if self.client.me:
+                        # Безопасно получаем first_name из names
+                        first_name = None
+                        if self.client.me.names and len(self.client.me.names) > 0:
+                            # Используем first_name, если есть, иначе name
+                            first_name = self.client.me.names[0].first_name or self.client.me.names[0].name
+                        
+                        me_info = {
+                            "id": self.client.me.id,
+                            "first_name": first_name or "",  # Всегда строка, даже если пустая
+                            "phone": self.client.me.phone or self.phone,
+                        }
+                    
                     return {
                         "success": True,
                         "connected": self.client.is_connected,
-                        "me": {
-                            "id": self.client.me.id if self.client.me else None,
-                            "first_name": self.client.me.names[0].first_name if self.client.me and self.client.me.names else None,
-                        } if self.client.me else None,
+                        "authenticated": True,
+                        "me": me_info,
                     }
                 else:
                     return {
                         "success": True,
                         "connected": self.client.is_connected,
+                        "authenticated": False,
                         "requires_auth": True,
                     }
             
@@ -315,13 +681,13 @@ class MaxClientWrapper:
 _wrapper_instance: Optional[MaxClientWrapper] = None
 
 
-def create_wrapper(phone: str, work_dir: Optional[str] = None) -> str:
+def create_wrapper(phone: str, work_dir: Optional[str] = None, token: Optional[str] = None) -> str:
     """Создать глобальный экземпляр обертки."""
     global _wrapper_instance
     if not PYMAX_AVAILABLE:
         return json.dumps({"success": False, "error": "pymax not available - missing dependencies"})
     try:
-        _wrapper_instance = MaxClientWrapper(phone, work_dir)
+        _wrapper_instance = MaxClientWrapper(phone, work_dir, token)
         return json.dumps({"success": True})
     except RuntimeError as e:
         if "pymax not available" in str(e):

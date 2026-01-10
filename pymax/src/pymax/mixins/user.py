@@ -94,7 +94,7 @@ class UserMixin(ClientProtocol):
         """
         self.logger.info("Fetching users count=%d", len(user_ids))
 
-        payload = FetchContactsPayload(contact_ids=user_ids).model_dump(by_alias=True)
+        payload = FetchContactsPayload(contact_ids=user_ids).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CONTACT_INFO, payload=payload)
 
@@ -120,7 +120,7 @@ class UserMixin(ClientProtocol):
         """
         self.logger.info("Searching user by phone: %s", phone)
 
-        payload = SearchByPhonePayload(phone=phone).model_dump(by_alias=True)
+        payload = SearchByPhonePayload(phone=phone).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CONTACT_INFO_BY_PHONE, payload=payload)
 
@@ -163,7 +163,7 @@ class UserMixin(ClientProtocol):
     async def _contact_action(self, payload: ContactActionPayload) -> dict[str, Any]:
         data = await self._send_and_wait(
             opcode=Opcode.CONTACT_UPDATE,  # 34
-            payload=payload.model_dump(by_alias=True),
+            payload=payload.to_dict(),
         )
         response_payload = data.get("payload")
         if not isinstance(response_payload, dict):

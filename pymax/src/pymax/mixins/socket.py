@@ -6,8 +6,15 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-import lz4.block
 import msgpack
+
+# lz4 - опциональная зависимость (бинарный модуль, может быть недоступен на iOS)
+try:
+    import lz4.block
+    LZ4_AVAILABLE = True
+except ImportError:
+    LZ4_AVAILABLE = False
+    lz4 = None
 from typing_extensions import override
 
 from pymax.exceptions import Error, SocketNotConnectedError, SocketSendError
@@ -54,6 +61,10 @@ class SocketMixin(BaseTransport):
         payload = None
         if payload_bytes:
             if comp_flag != 0:
+                # lz4 сжатие
+                if not LZ4_AVAILABLE:
+                    self.logger.warning("lz4 not available, cannot decompress payload. Install lz4 for compressed data support.")
+                    return None
                 # TODO: надо выяснить правильный размер распаковки
                 # uncompressed_size = int.from_bytes(payload_bytes[0:4], "big")
                 compressed_data = payload_bytes
@@ -62,7 +73,8 @@ class SocketMixin(BaseTransport):
                         compressed_data,
                         uncompressed_size=99999,
                     )
-                except lz4.block.LZ4BlockError:
+                except Exception:
+                    # Обрабатываем любые ошибки lz4 (LZ4BlockError или другие)
                     return None
             payload = msgpack.unpackb(payload_bytes, raw=False, strict_map_key=False)
 

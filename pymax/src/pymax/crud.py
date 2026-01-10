@@ -1,37 +1,41 @@
+"""
+CRUD операции для базы данных - без sqlmodel, используем sqlalchemy.
+"""
 from typing import cast
 from uuid import UUID
 
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine.base import Engine
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Auth
-from .static.enum import DeviceType
+from .models import Auth, Base
 
 
 class Database:
     def __init__(self, workdir: str) -> None:
         self.workdir = workdir
         self.engine = self.get_engine(workdir)
+        self.SessionLocal = sessionmaker(bind=self.engine)
         self.create_all()
         self._ensure_single_auth()
 
     def create_all(self) -> None:
-        SQLModel.metadata.create_all(self.engine)
+        Base.metadata.create_all(self.engine)
 
     def get_engine(self, workdir: str) -> Engine:
         return create_engine(f"sqlite:///{workdir}/session.db")
 
     def get_session(self) -> Session:
-        return Session(bind=self.engine)
+        return self.SessionLocal()
 
     def get_auth_token(self) -> str | None:
         with self.get_session() as session:
-            token = cast(str | None, session.exec(select(Auth.token)).first())
-            return token
+            result = session.execute(select(Auth.token)).scalar_one_or_none()
+            return cast(str | None, result)
 
     def get_device_id(self) -> UUID:
         with self.get_session() as session:
-            device_id = session.exec(select(Auth.device_id)).first()
+            device_id = session.execute(select(Auth.device_id)).scalar_one_or_none()
 
             if device_id is None:
                 auth = Auth()
@@ -48,29 +52,21 @@ class Database:
             session.refresh(auth)
             return auth
 
-    def update_auth_token(self, device_id: UUID, token: str) -> None:
+    def update_auth_token(self, device_id: UUID | None = None, token: str | None = None) -> None:
+        """
+        Обновить токен авторизации в базе данных.
+        
+        :param device_id: ID устройства (опционально, для совместимости)
+        :param token: Токен авторизации
+        """
         with self.get_session() as session:
-            auth = session.exec(select(Auth).where(Auth.device_id == device_id)).first()
-            if auth:
-                auth.token = token
+            auth = session.execute(select(Auth)).scalar_one_or_none()
+            if auth is None:
+                auth = Auth()
                 session.add(auth)
-                session.commit()
-                session.refresh(auth)
-                return
-
-            existing = session.exec(select(Auth)).first()
-            if existing:
-                existing.device_id = device_id
-                existing.token = token
-                session.add(existing)
-                session.commit()
-                session.refresh(existing)
-                return
-
-            new_auth = Auth(device_id=device_id, token=token)
-            session.add(new_auth)
+            if token is not None:
+                auth.token = token
             session.commit()
-            session.refresh(new_auth)
 
     def update(self, auth: Auth) -> Auth:
         with self.get_session() as session:
@@ -80,17 +76,15 @@ class Database:
             return auth
 
     def _ensure_single_auth(self) -> None:
+        """Убеждаемся, что есть только одна запись в таблице auth."""
         with self.get_session() as session:
-            rows = session.exec(select(Auth)).all()
-            if not rows:
-                auth = Auth(device_type=DeviceType.WEB.value)
+            auths = list(session.execute(select(Auth)).scalars().all())
+            if len(auths) == 0:
+                auth = Auth()
                 session.add(auth)
                 session.commit()
-                session.refresh(auth)
-                return
-
-            if len(rows) > 1:
-                _ = rows[0]
-                for extra in rows[1:]:
-                    session.delete(extra)
+            elif len(auths) > 1:
+                # Удаляем все кроме первой записи
+                for auth in auths[1:]:
+                    session.delete(auth)
                 session.commit()

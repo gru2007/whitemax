@@ -53,7 +53,7 @@ class AuthMixin(ClientProtocol):
 
         payload = RequestCodePayload(
             phone=phone, type=AuthType.START_AUTH, language=language
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH_REQUEST, payload=payload)
 
@@ -89,7 +89,7 @@ class AuthMixin(ClientProtocol):
 
         payload = RequestCodePayload(
             phone=phone, type=AuthType.RESEND, language=language
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH_REQUEST, payload=payload)
 
@@ -126,7 +126,7 @@ class AuthMixin(ClientProtocol):
             token=token,
             verify_code=code,
             auth_token_type=AuthType.CHECK_CODE,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH, payload=payload)
 
@@ -332,7 +332,7 @@ class AuthMixin(ClientProtocol):
                 first_name=first_name,
                 last_name=last_name,
                 token=token,
-            ).model_dump(by_alias=True)
+            ).to_dict()
 
             data = await self._send_and_wait(opcode=Opcode.AUTH_CONFIRM, payload=payload)
             if data.get("payload", {}).get("error"):
@@ -390,7 +390,7 @@ class AuthMixin(ClientProtocol):
         payload = CheckPasswordChallengePayload(
             track_id=track_id,
             password=password,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH_LOGIN_CHECK_PASSWORD, payload=payload)
 
@@ -434,7 +434,7 @@ class AuthMixin(ClientProtocol):
         payload = SetPasswordPayload(
             track_id=track_id,
             password=password,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH_VALIDATE_PASSWORD, payload=payload)
         payload = data.get("payload", {})
@@ -444,7 +444,7 @@ class AuthMixin(ClientProtocol):
         payload = SetHintPayload(
             track_id=track_id,
             hint=hint,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.AUTH_VALIDATE_HINT, payload=payload)
         payload = data.get("payload", {})
@@ -458,7 +458,7 @@ class AuthMixin(ClientProtocol):
 
         data = await self._send_and_wait(
             opcode=Opcode.AUTH_VERIFY_EMAIL,
-            payload=payload.model_dump(by_alias=True),
+            payload=payload.to_dict(),
         )
 
         if data.get("payload", {}).get("error"):
@@ -479,7 +479,7 @@ class AuthMixin(ClientProtocol):
 
             data = await self._send_and_wait(
                 opcode=Opcode.AUTH_CHECK_EMAIL,
-                payload=payload.model_dump(by_alias=True),
+                payload=payload.to_dict(),
             )
 
             if data.get("payload", {}).get("error"):
@@ -511,7 +511,7 @@ class AuthMixin(ClientProtocol):
         """
         self.logger.info("Setting account password")
 
-        payload = CreateTrackPayload().model_dump(by_alias=True)
+        payload = CreateTrackPayload().to_dict()
 
         data = await self._send_and_wait(
             opcode=Opcode.AUTH_CREATE_TRACK,
@@ -585,7 +585,7 @@ class AuthMixin(ClientProtocol):
 
         data = await self._send_and_wait(
             opcode=Opcode.AUTH_SET_2FA,
-            payload=payload.model_dump(by_alias=True),
+            payload=payload.to_dict(),
         )
         payload = data.get("payload", {})
         if payload and payload.get("error"):

@@ -16,7 +16,7 @@ from pymax.static.enum import Opcode
 class TelemetryMixin(ClientProtocol):
     async def _send_navigation_event(self, events: list[NavigationEventPayload]) -> None:
         try:
-            payload = NavigationPayload(events=events).model_dump(by_alias=True)
+            payload = NavigationPayload(events=events).to_dict()
             data = await self._send_and_wait(
                 opcode=Opcode.LOG,
                 payload=payload,

@@ -28,12 +28,14 @@ class AppState: ObservableObject {
             let hasToken = service.checkAuthentication()
             
             if hasToken {
-                // Пытаемся запустить клиент
+                // Пытаемся запустить клиент и восстановить сессию
                 do {
                     try await service.startClient()
                     isAuthenticated = service.isAuthenticated
                 } catch {
                     print("Failed to start client: \(error)")
+                    // Если не удалось восстановить сессию, очищаем токен
+                    UserDefaults.standard.removeObject(forKey: "max_auth_token")
                     isAuthenticated = false
                 }
             } else {

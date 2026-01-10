@@ -27,7 +27,7 @@ class ChannelMixin(ClientProtocol):
         """
         payload = ResolveLinkPayload(
             link=f"https://max.ru/{name}",
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.LINK_INFO, payload=payload)
         if data.get("payload", {}).get("error"):
@@ -49,7 +49,7 @@ class ChannelMixin(ClientProtocol):
         """
         payload = JoinChatPayload(
             link=link,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_JOIN, payload=payload)
         if data.get("payload", {}).get("error"):
@@ -65,7 +65,7 @@ class ChannelMixin(ClientProtocol):
     ) -> tuple[list[Member], int | None]:
         data = await self._send_and_wait(
             opcode=Opcode.CHAT_MEMBERS,
-            payload=payload.model_dump(by_alias=True, exclude_none=True),
+            payload=payload.to_dict(exclude_none=True),
         )
         response_payload = data.get("payload", {})
         if data.get("payload", {}).get("error"):

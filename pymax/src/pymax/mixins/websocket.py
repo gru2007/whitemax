@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from typing import Any
 
 import websockets
@@ -45,11 +46,18 @@ class WebSocketMixin(BaseTransport):
             self.logger.warning("WebSocket already connected")
             return
 
+        # Для iOS используем SSL контекст без проверки сертификатов
+        # так как на iOS нет доступа к системным сертификатам
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
         self._ws = await websockets.connect(
             self.uri,
             origin=WEBSOCKET_ORIGIN,
             user_agent_header=user_agent.header_user_agent,
             proxy=self.proxy,
+            ssl=ssl_context,
         )
         self.is_connected = True
         self._incoming = asyncio.Queue()

@@ -168,12 +168,11 @@ class MaxClient(ApiMixin, WebSocketMixin, BaseClient):
         self._on_raw_receive_handlers: list[Callable[[dict[str, Any]], Any | Awaitable[Any]]] = []
         self._scheduled_tasks: list[tuple[Callable[[], Any | Awaitable[Any]], float]] = []
 
-        self._ssl_context = ssl.create_default_context()
-        self._ssl_context.set_ciphers("DEFAULT")
-        self._ssl_context.check_hostname = True
-        self._ssl_context.verify_mode = ssl.CERT_REQUIRED
-        self._ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        self._ssl_context.load_default_certs()
+        # Для iOS используем SSL контекст без проверки сертификатов
+        # так как на iOS нет доступа к системным сертификатам
+        self._ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self._ssl_context.check_hostname = False
+        self._ssl_context.verify_mode = ssl.CERT_NONE
         self._socket: socket.socket | None = None
         self._ws: websockets.ClientConnection | None = None
 

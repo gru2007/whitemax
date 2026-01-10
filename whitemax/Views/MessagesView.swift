@@ -44,16 +44,33 @@ struct MessagesView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(messages) { message in
-                            MessageRow(message: message)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(messages) { message in
+                                MessageRow(message: message)
+                                    .id(message.id)
+                            }
+                        }
+                        .padding()
+                    }
+                    .refreshable {
+                        await loadMessagesAsync()
+                    }
+                    .onChange(of: messages.count) { _ in
+                        // Автоматически скроллим вниз к последнему сообщению при загрузке
+                        if let lastMessage = messages.last {
+                            withAnimation {
+                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            }
                         }
                     }
-                    .padding()
-                }
-                .refreshable {
-                    await loadMessagesAsync()
+                    .onAppear {
+                        // Скроллим вниз при первом появлении
+                        if let lastMessage = messages.last {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
                 }
             }
         }
@@ -74,13 +91,19 @@ struct MessagesView: View {
         isLoading = true
         errorMessage = nil
         
+        print("📥 Loading messages for chat_id=\(chat.id)...")
+        
         do {
             let loadedMessages = try await service.getMessages(chatId: chat.id, limit: 50)
+            print("✓ Loaded \(loadedMessages.count) messages")
             await MainActor.run {
-                self.messages = loadedMessages.reversed() // Переворачиваем для правильного порядка
+                // Сообщения уже отсортированы по времени (старые первыми, новые последними)
+                self.messages = loadedMessages
                 self.isLoading = false
+                print("✓ Messages updated in UI: \(self.messages.count) messages")
             }
         } catch {
+            print("✗ Error loading messages: \(error)")
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
@@ -118,7 +141,8 @@ struct MessageRow: View {
     }
     
     private func formatDate(_ timestamp: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        // timestamp в миллисекундах, нужно преобразовать в секунды
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000.0)
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
@@ -133,6 +157,7 @@ struct MessageRow: View {
             title: "Test Chat",
             type: "PRIVATE",
             photoId: nil,
+            iconUrl: nil,
             unreadCount: 0
         ))
     }

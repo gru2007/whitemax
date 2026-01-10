@@ -28,7 +28,7 @@ class SelfMixin(ClientProtocol):
 
         data = await self._send_and_wait(
             opcode=Opcode.PHOTO_UPLOAD,
-            payload=UploadPayload(profile=True).model_dump(by_alias=True),
+            payload=UploadPayload(profile=True).to_dict(),
         )
 
         if data.get("payload", {}).get("error"):
@@ -93,19 +93,13 @@ class SelfMixin(ClientProtocol):
                 last_name=last_name,
                 description=description,
                 photo_token=photo_token,
-            ).model_dump(
-                by_alias=True,
-                exclude_none=True,
-            )
+            ).to_dict(exclude_none=True)
         else:
             payload = ChangeProfilePayload(
                 first_name=first_name,
                 last_name=last_name,
                 description=description,
-            ).model_dump(
-                by_alias=True,
-                exclude_none=True,
-            )
+            ).to_dict(exclude_none=True)
 
         data = await self._send_and_wait(opcode=Opcode.PROFILE, payload=payload)
 
@@ -138,7 +132,7 @@ class SelfMixin(ClientProtocol):
             title=title,
             include=chat_include,
             filters=filters or [],
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.FOLDERS_UPDATE, payload=payload)
 
@@ -158,7 +152,7 @@ class SelfMixin(ClientProtocol):
         """
         self.logger.info("Fetching folders")
 
-        payload = GetFolderPayload(folder_sync=folder_sync).model_dump(by_alias=True)
+        payload = GetFolderPayload(folder_sync=folder_sync).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.FOLDERS_GET, payload=payload)
 
@@ -199,7 +193,7 @@ class SelfMixin(ClientProtocol):
             include=chat_include or [],
             filters=filters or [],
             options=options or [],
-        ).model_dump(by_alias=True, exclude_none=True)
+        ).to_dict(exclude_none=True)
 
         data = await self._send_and_wait(opcode=Opcode.FOLDERS_UPDATE, payload=payload)
 
@@ -219,7 +213,7 @@ class SelfMixin(ClientProtocol):
         """
         self.logger.info("Deleting folder")
 
-        payload = DeleteFolderPayload(folder_ids=[folder_id]).model_dump(by_alias=True)
+        payload = DeleteFolderPayload(folder_ids=[folder_id]).to_dict()
         data = await self._send_and_wait(opcode=Opcode.FOLDERS_DELETE, payload=payload)
         if data.get("payload", {}).get("error"):
             MixinsUtils.handle_error(data)

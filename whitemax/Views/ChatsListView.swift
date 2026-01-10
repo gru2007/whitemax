@@ -90,10 +90,11 @@ struct ChatsListView: View {
     
     private func logout() {
         Task {
-            try? await service.stopClient()
-            UserDefaults.standard.removeObject(forKey: "max_auth_token")
-            await MainActor.run {
-                service.isAuthenticated = false
+            do {
+                try await service.logout()
+                // Навигация обратно к экрану входа будет обработана через AppState
+            } catch {
+                print("Logout error: \(error)")
             }
         }
     }

@@ -12,10 +12,11 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 dependencies = [
-  "sqlmodel>=0.0.24",
+  "sqlalchemy>=2.0.0",
+  "aiosqlite>=0.20.0",
   "websockets>=15.0",
   "msgpack>=1.1.1",
-  "lz4>=4.4.4",
+  "lz4>=4.4.4",  # Необходим для Socket клиента (распаковка сжатых данных)
   "aiohttp>=3.12.15",
   "aiofiles>=24.1.0",
   "qrcode>=8.2",
@@ -90,7 +91,7 @@ max-complexity = 10
 python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
-plugins = ["sqlalchemy.ext.mypy.plugin", "pydantic.mypy"]
+plugins = ["sqlalchemy.ext.mypy.plugin"]
 
 [tool.isort]
 profile = "black"

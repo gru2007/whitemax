@@ -193,7 +193,7 @@ class BaseTransport(ClientProtocol):
             seq=self._seq,
             opcode=opcode.value,
             payload=payload,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         self.logger.debug("make_message opcode=%s cmd=%s seq=%s", opcode, cmd, self._seq)
         return msg
@@ -217,10 +217,10 @@ class BaseTransport(ClientProtocol):
     async def _handshake(self, user_agent: UserAgentPayload) -> dict[str, Any]:
         self.logger.debug(
             "Sending handshake with user_agent keys=%s",
-            user_agent.model_dump(by_alias=True).keys(),
+            user_agent.to_dict().keys(),
         )
 
-        user_agent_json = user_agent.model_dump(by_alias=True)
+        user_agent_json = user_agent.to_dict()
         resp = await self._send_and_wait(
             opcode=Opcode.SESSION_INIT,
             payload={"deviceId": str(self._device_id), "userAgent": user_agent_json},
@@ -506,7 +506,7 @@ class BaseTransport(ClientProtocol):
             drafts_sync=0,
             chats_count=40,
             user_agent=user_agent,
-        ).model_dump(by_alias=True)
+        ).to_dict()
         try:
             data = await self._send_and_wait(opcode=Opcode.LOGIN, payload=payload)
             raw_payload = data.get("payload", {})

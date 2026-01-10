@@ -13,7 +13,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		4416D4F02F12713700B1C537 /* whitemax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = whitemax.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4416D4F02F12713700B1C537 /* WhiteMax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WhiteMax.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA5B234A8DB44E8ABF893291 /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Python.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -51,7 +51,7 @@
 		4416D4F12F12713700B1C537 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				4416D4F02F12713700B1C537 /* whitemax.app */,
+				4416D4F02F12713700B1C537 /* WhiteMax.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -59,9 +59,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		4416D4EF2F12713700B1C537 /* whitemax */ = {
+		4416D4EF2F12713700B1C537 /* WhiteMax */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4416D4FB2F12713900B1C537 /* Build configuration list for PBXNativeTarget "whitemax" */;
+			buildConfigurationList = 4416D4FB2F12713900B1C537 /* Build configuration list for PBXNativeTarget "WhiteMax" */;
 			buildPhases = (
 				4416D4EC2F12713700B1C537 /* Sources */,
 				543C34E5C9AC4F21AB698058 /* Copy Python Libraries */,
@@ -75,13 +75,13 @@
 			fileSystemSynchronizedGroups = (
 				4416D4F22F12713700B1C537 /* whitemax */,
 			);
-			name = whitemax;
+			name = WhiteMax;
 			packageProductDependencies = (
 				4F03D3C72FF74E89B8B2502F /* PythonKit */,
 				4416DA432F12AA5900B1C537 /* FLEX */,
 			);
 			productName = whitemax;
-			productReference = 4416D4F02F12713700B1C537 /* whitemax.app */;
+			productReference = 4416D4F02F12713700B1C537 /* WhiteMax.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -100,11 +100,11 @@
 				};
 			};
 			buildConfigurationList = 4416D4EB2F12713700B1C537 /* Build configuration list for PBXProject "whitemax" */;
-			developmentRegion = en;
+			developmentRegion = ru;
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				en,
 				Base,
+				ru,
 			);
 			mainGroup = 4416D4E72F12713700B1C537;
 			minimizedProjectReferenceProxies = 1;
@@ -117,7 +117,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4416D4EF2F12713700B1C537 /* whitemax */,
+				4416D4EF2F12713700B1C537 /* WhiteMax */,
 			);
 		};
 /* End PBXProject section */
@@ -305,25 +305,30 @@
 					"$(inherited)",
 					"\"$(BUILT_PRODUCTS_DIR)/Python.framework/Headers\"",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = WhiteMax;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = tech.artemevsoft.whitemax;
+				PRODUCT_BUNDLE_IDENTIFIER = tech.ruslan.healthy;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -337,6 +342,7 @@
 				DEVELOPMENT_TEAM = C4L8Q37YC4;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"EXCLUDED_SOURCE_FILE_NAMES[arch=*]" = "FLEX*";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)",
@@ -346,25 +352,30 @@
 					"$(inherited)",
 					"\"$(BUILT_PRODUCTS_DIR)/Python.framework/Headers\"",
 				);
+				INFOPLIST_KEY_CFBundleDisplayName = WhiteMax;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = tech.artemevsoft.whitemax;
+				PRODUCT_BUNDLE_IDENTIFIER = tech.ruslan.healthy;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -380,7 +391,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4416D4FB2F12713900B1C537 /* Build configuration list for PBXNativeTarget "whitemax" */ = {
+		4416D4FB2F12713900B1C537 /* Build configuration list for PBXNativeTarget "WhiteMax" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4416D4FC2F12713900B1C537 /* Debug */,

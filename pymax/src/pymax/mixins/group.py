@@ -52,7 +52,7 @@ class GroupMixin(ClientProtocol):
                 ],
             ),
             notify=notify,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.MSG_SEND, payload=payload)
         if data.get("payload", {}).get("error"):
@@ -93,7 +93,7 @@ class GroupMixin(ClientProtocol):
             user_ids=user_ids,
             show_history=show_history,
             operation="add",
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_MEMBERS_UPDATE, payload=payload)
 
@@ -151,7 +151,7 @@ class GroupMixin(ClientProtocol):
             chat_id=chat_id,
             user_ids=user_ids,
             clean_msg_period=clean_msg_period,
-        ).model_dump(by_alias=True)
+        ).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_MEMBERS_UPDATE, payload=payload)
 
@@ -200,7 +200,7 @@ class GroupMixin(ClientProtocol):
                 ONLY_ADMIN_CAN_CALL=only_admin_can_call,
                 MEMBERS_CAN_SEE_PRIVATE_LINK=members_can_see_private_link,
             ),
-        ).model_dump(by_alias=True, exclude_none=True)
+        ).to_dict(exclude_none=True)
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_UPDATE, payload=payload)
 
@@ -237,7 +237,7 @@ class GroupMixin(ClientProtocol):
             chat_id=chat_id,
             theme=name,
             description=description,
-        ).model_dump(by_alias=True, exclude_none=True)
+        ).to_dict(exclude_none=True)
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_UPDATE, payload=payload)
 
@@ -271,7 +271,7 @@ class GroupMixin(ClientProtocol):
         if proceed_link is None:
             raise ValueError("Invalid group link")
 
-        payload = JoinChatPayload(link=proceed_link).model_dump(by_alias=True)
+        payload = JoinChatPayload(link=proceed_link).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_JOIN, payload=payload)
 
@@ -326,7 +326,7 @@ class GroupMixin(ClientProtocol):
         Returns:
             Chat: Обновленный объект чата с новой ссылкой.
         """
-        payload = ReworkInviteLinkPayload(chat_id=chat_id).model_dump(by_alias=True)
+        payload = ReworkInviteLinkPayload(chat_id=chat_id).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_UPDATE, payload=payload)
 
@@ -352,7 +352,7 @@ class GroupMixin(ClientProtocol):
             chat_id for chat_id in chat_ids if await self._get_chat(chat_id) is None
         ]
         if missed_chat_ids:
-            payload = GetChatInfoPayload(chat_ids=missed_chat_ids).model_dump(by_alias=True)
+            payload = GetChatInfoPayload(chat_ids=missed_chat_ids).to_dict()
         else:
             chats: list[Chat] = [
                 chat for chat_id in chat_ids if (chat := await self._get_chat(chat_id)) is not None
@@ -402,7 +402,7 @@ class GroupMixin(ClientProtocol):
         :return: None
         :rtype: None
         """
-        payload = LeaveChatPayload(chat_id=chat_id).model_dump(by_alias=True)
+        payload = LeaveChatPayload(chat_id=chat_id).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHAT_LEAVE, payload=payload)
 
@@ -436,7 +436,7 @@ class GroupMixin(ClientProtocol):
         if marker is None:
             marker = int(time.time() * 1000)
 
-        payload = FetchChatsPayload(marker=marker).model_dump(by_alias=True)
+        payload = FetchChatsPayload(marker=marker).to_dict()
 
         data = await self._send_and_wait(opcode=Opcode.CHATS_LIST, payload=payload)
 
