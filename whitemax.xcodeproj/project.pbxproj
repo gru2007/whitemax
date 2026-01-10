@@ -6,8 +6,15 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3D162C0898E044E6B3AEEA4B /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DA5B234A8DB44E8ABF893291 /* Python.xcframework */; };
+		4416DA442F12AA5900B1C537 /* FLEX in Frameworks */ = {isa = PBXBuildFile; productRef = 4416DA432F12AA5900B1C537 /* FLEX */; };
+		A968D7AFED24425D8B83B39A /* PythonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4F03D3C72FF74E89B8B2502F /* PythonKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		4416D4F02F12713700B1C537 /* whitemax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = whitemax.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DA5B234A8DB44E8ABF893291 /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Python.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -23,6 +30,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3D162C0898E044E6B3AEEA4B /* Python.xcframework in Frameworks */,
+				A968D7AFED24425D8B83B39A /* PythonKit in Frameworks */,
+				4416DA442F12AA5900B1C537 /* FLEX in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -33,6 +43,7 @@
 			isa = PBXGroup;
 			children = (
 				4416D4F22F12713700B1C537 /* whitemax */,
+				DA5B234A8DB44E8ABF893291 /* Python.xcframework */,
 				4416D4F12F12713700B1C537 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -53,6 +64,7 @@
 			buildConfigurationList = 4416D4FB2F12713900B1C537 /* Build configuration list for PBXNativeTarget "whitemax" */;
 			buildPhases = (
 				4416D4EC2F12713700B1C537 /* Sources */,
+				543C34E5C9AC4F21AB698058 /* Copy Python Libraries */,
 				4416D4ED2F12713700B1C537 /* Frameworks */,
 				4416D4EE2F12713700B1C537 /* Resources */,
 			);
@@ -65,6 +77,8 @@
 			);
 			name = whitemax;
 			packageProductDependencies = (
+				4F03D3C72FF74E89B8B2502F /* PythonKit */,
+				4416DA432F12AA5900B1C537 /* FLEX */,
 			);
 			productName = whitemax;
 			productReference = 4416D4F02F12713700B1C537 /* whitemax.app */;
@@ -94,6 +108,10 @@
 			);
 			mainGroup = 4416D4E72F12713700B1C537;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				05A9C1BA673C4031B0C5E0B1 /* XCRemoteSwiftPackageReference "PythonKit" */,
+				4416DA422F12AA5900B1C537 /* XCRemoteSwiftPackageReference "FLEX-dylib" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4416D4F12F12713700B1C537 /* Products */;
 			projectDirPath = "";
@@ -113,6 +131,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		543C34E5C9AC4F21AB698058 /* Copy Python Libraries */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Python Libraries";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nif [ -f \"$PROJECT_DIR/BuildScripts/copy_python_libs.sh\" ]; then\n    \"$PROJECT_DIR/BuildScripts/copy_python_libs.sh\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		4416D4EC2F12713700B1C537 /* Sources */ = {
@@ -163,7 +203,7 @@
 				DEVELOPMENT_TEAM = C4L8Q37YC4;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -227,7 +267,7 @@
 				DEVELOPMENT_TEAM = C4L8Q37YC4;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -255,7 +295,16 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = C4L8Q37YC4;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(BUILT_PRODUCTS_DIR)/Python.framework/Headers\"",
+				);
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -287,7 +336,16 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = C4L8Q37YC4;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(BUILT_PRODUCTS_DIR)/Python.framework/Headers\"",
+				);
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -332,6 +390,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		05A9C1BA673C4031B0C5E0B1 /* XCRemoteSwiftPackageReference "PythonKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pvieito/PythonKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.3.0;
+			};
+		};
+		4416DA422F12AA5900B1C537 /* XCRemoteSwiftPackageReference "FLEX-dylib" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gru2007/FLEX-dylib";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4416DA432F12AA5900B1C537 /* FLEX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4416DA422F12AA5900B1C537 /* XCRemoteSwiftPackageReference "FLEX-dylib" */;
+			productName = FLEX;
+		};
+		4F03D3C72FF74E89B8B2502F /* PythonKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 05A9C1BA673C4031B0C5E0B1 /* XCRemoteSwiftPackageReference "PythonKit" */;
+			productName = PythonKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4416D4E82F12713700B1C537 /* Project object */;
 }

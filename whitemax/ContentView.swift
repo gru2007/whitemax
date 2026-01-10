@@ -2,20 +2,31 @@
 //  ContentView.swift
 //  whitemax
 //
-//  Created by Руслан Артемьев on 10.01.2026.
+//  Главный view с навигацией
 //
 
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var appState = AppState()
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            if appState.isLoading {
+                ProgressView("Загрузка...")
+            } else if appState.isAuthenticated {
+                ChatsListView()
+                    .environmentObject(appState)
+            } else {
+                NavigationStack {
+                    LoginView()
+                        .environmentObject(appState)
+                }
+            }
         }
-        .padding()
+        .onChange(of: MaxClientService.shared.isAuthenticated) { oldValue, newValue in
+            appState.setAuthenticated(newValue)
+        }
     }
 }
 
