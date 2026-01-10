@@ -97,23 +97,22 @@ class MaxClientWrapper:
     
     def _run_async(self, coro):
         """Запустить асинхронную функцию синхронно."""
+        # Для стабильной работы SocketMaxClient важно переиспользовать один event loop,
+        # иначе объекты сокета/transport могут оказаться привязаны к закрытому loop.
+        loop = self._get_loop()
         try:
-            # Пытаемся получить текущий event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # Если loop уже запущен, используем ThreadPoolExecutor для создания нового loop
+            if loop.is_running():
+                # Если loop уже запущен в текущем потоке, то запускаем coro в отдельном потоке
+                # через asyncio.run(). (Редкий кейс для нашей интеграции, но пусть будет безопасно.)
                 import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(asyncio.run, coro)
                     return future.result(timeout=60)  # Таймаут 60 секунд
-            except RuntimeError:
-                # Если loop не запущен, создаем новый и запускаем в нем
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(coro)
-                finally:
-                    loop.close()
+
+            # Обычный синхронный вызов: выполняем coroutine в нашем стабильном loop
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
         except Exception as e:
             print(f"Error in _run_async: {e}")
             import traceback
@@ -196,6 +195,39 @@ class MaxClientWrapper:
         
         try:
             async def _login():
+                def _is_code_invalid_error(err: Exception) -> bool:
+                    s = str(err).lower()
+                    # Серверные ошибки: "код устарел" / лимит попыток
+                    return (
+                        "этот код устарел" in s
+                        or "получите новый" in s
+                        or "attempt.limit" in s
+                        or "error.code.attempt.limit" in s
+                    )
+
+                def _is_send_and_wait_error(err: Exception) -> bool:
+                    # Кейс, когда запрос мог уйти на сервер, но ответ не дождались.
+                    # Повторять тот же код опасно: можно получить "код устарел"/лимит попыток.
+                    t = type(err).__name__
+                    s = str(err).lower()
+                    return (
+                        "socketsenderror" in t.lower()
+                        or "send and wait failed" in s
+                        or "opcode=opcode.auth" in s
+                        or "opcode.auth" in s
+                    )
+
+                async def _reset_connection():
+                    # Аккуратно сбрасываем сокет, чтобы следующий шаг мог переподключиться
+                    try:
+                        if hasattr(self.client, "_socket") and self.client._socket:
+                            try:
+                                self.client._socket.close()
+                            except Exception:
+                                pass
+                    finally:
+                        self.client.is_connected = False
+
                 # Сначала создаем клиент, если его нет
                 if self.client is None:
                     result = self.create_client()
@@ -221,68 +253,80 @@ class MaxClientWrapper:
                 await asyncio.sleep(0.2)
                 
                 # Авторизуемся с кодом с retry
-                max_retries = 3
+                # ВАЖНО: отправка кода — не идемпотентная операция.
+                # Если соединение оборвалось на "send and wait failed", сервер мог получить код,
+                # и повторная отправка тем же кодом приводит к "код устарел" / лимиту попыток.
+                max_retries = 2  # максимум 1 повтор только для "не подключен" до отправки
                 retry_count = 0
-                last_error = None
-                
+                last_error: Optional[Exception] = None
+
                 while retry_count < max_retries:
                     try:
                         print(f"📤 Attempting login with code (attempt {retry_count + 1}/{max_retries})...")
-                        
-                        # Проверяем соединение перед каждой попыткой
+
+                        # Проверяем соединение перед попыткой
                         if not self.client.is_connected:
                             print(f"⚠️ Connection lost before login, reconnecting...")
                             await self.client.connect(self.client.user_agent)
                             await asyncio.sleep(0.2)
-                        
+
                         await self.client.login_with_code(temp_token, code, start=False)
                         print(f"✓ Login successful")
-                        break  # Успешно авторизовались
+                        last_error = None
+                        break
                     except Exception as login_error:
                         last_error = login_error
-                        error_str = str(login_error)
                         error_type = type(login_error).__name__
                         print(f"✗ Login failed (attempt {retry_count + 1}/{max_retries}): {error_type}: {login_error}")
-                        
-                        # Проверяем, является ли ошибка связанной с соединением
-                        connection_errors = [
-                            "SocketSendError", "SocketNotConnectedError", "SSLEOFError", 
-                            "SSLError", "ConnectionError", "not connected", "EOF", "Timeout"
-                        ]
-                        is_connection_error = any(err in error_type or err.lower() in error_str.lower() for err in connection_errors)
-                        
+
+                        if _is_code_invalid_error(login_error):
+                            # Сервер явно сказал, что код невалиден/устарел/лимит
+                            return {
+                                "success": False,
+                                "requires_new_code": True,
+                                "error": str(login_error),
+                            }
+
+                        if _is_send_and_wait_error(login_error):
+                            # Не повторяем отправку этого же кода
+                            await _reset_connection()
+                            return {
+                                "success": False,
+                                "requires_new_code": True,
+                                "error": f"{error_type}: Connection dropped while submitting the code. Please request a new code and try again. Details: {login_error}",
+                            }
+
+                        # Остальные connection-like ошибки: делаем 1 переподключение и 1 повтор
+                        error_str = str(login_error).lower()
+                        is_connection_error = (
+                            error_type in ["SocketNotConnectedError", "SSLEOFError", "SSLError", "ConnectionError"]
+                            or any(keyword in error_str for keyword in ["not connected", "eof", "timeout", "connection"])
+                        )
+
                         if is_connection_error and retry_count < max_retries - 1:
-                            print(f"⚠️ Connection error detected ({error_type}), reconnecting and retrying...")
                             retry_count += 1
+                            print(f"⚠️ Connection error detected ({error_type}), reconnecting and retrying...")
+                            await _reset_connection()
+                            await asyncio.sleep(0.5 * retry_count)
                             try:
-                                # Закрываем старое соединение
-                                if hasattr(self.client, '_socket') and self.client._socket:
-                                    try:
-                                        self.client._socket.close()
-                                    except:
-                                        pass
-                                self.client.is_connected = False
-                                
-                                # Переподключаемся с увеличивающейся задержкой
-                                await asyncio.sleep(0.5 * retry_count)
                                 await self.client.connect(self.client.user_agent)
                                 await asyncio.sleep(0.2)
-                                print(f"✓ Reconnected successfully, retrying login...")
-                                continue  # Пробуем еще раз
                             except Exception as reconnect_error:
-                                print(f"✗ Reconnection failed: {reconnect_error}")
-                                if retry_count >= max_retries:
-                                    raise reconnect_error
-                        else:
-                            # Другие ошибки или последняя попытка - не повторяем
-                            if retry_count >= max_retries - 1:
-                                raise login_error
-                            retry_count += 1
-                            await asyncio.sleep(0.5 * retry_count)
+                                return {"success": False, "error": f"Reconnection failed: {reconnect_error}"}
+                            continue
+
+                        # Неизвестная или не-connection ошибка: не ретраим
+                        return {"success": False, "error": str(login_error)}
                 
-                # Проверяем, успешно ли авторизовались
-                if not self.client.me:
-                    error_msg = f"Login completed but user info not available: {last_error}" if last_error else "Login failed: user info not available"
+                # Проверяем, успешно ли авторизовались.
+                # Важно: `me` может быть не загружен сразу (особенно при start=False),
+                # но токен уже валиден — это не должно ломать логин.
+                if not getattr(self.client, "_token", None):
+                    error_msg = (
+                        f"Login failed: token not available: {last_error}"
+                        if last_error
+                        else "Login failed: token not available"
+                    )
                     print(f"✗ {error_msg}")
                     return {"success": False, "error": error_msg}
                 

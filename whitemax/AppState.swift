@@ -15,8 +15,19 @@ class AppState: ObservableObject {
     @Published var isLoading = true
     
     private let service = MaxClientService.shared
+    private var cancellables = Set<AnyCancellable>()
     
     init() {
+        // Следим за изменениями авторизации в сервисе, чтобы root UI всегда переключался
+        // после логина/логаута (без хрупких onChange в ContentView).
+        service.$isAuthenticated
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newValue in
+                self?.isAuthenticated = newValue
+            }
+            .store(in: &cancellables)
+
         checkAuthentication()
     }
     

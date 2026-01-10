@@ -148,6 +148,9 @@ class MaxClientService: ObservableObject {
         
         if !success {
             let error = json["error"] as? String ?? "Unknown error"
+            if (json["requires_new_code"] as? Bool) == true {
+                throw MaxClientError.loginFailed("\(error)\n\nЗапросите новый код и попробуйте снова.")
+            }
             throw MaxClientError.loginFailed(error)
         }
         

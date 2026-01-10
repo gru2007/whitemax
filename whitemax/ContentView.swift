@@ -24,9 +24,6 @@ struct ContentView: View {
                 }
             }
         }
-        .onChange(of: MaxClientService.shared.isAuthenticated) { oldValue, newValue in
-            appState.setAuthenticated(newValue)
-        }
     }
 }
 
