@@ -272,9 +272,9 @@ if [ ! -d "${PYTHON_FRAMEWORK}" ]; then
 fi
 
 # Копируем Python стандартную библиотеку
-# В xcframework стандартная библиотека находится в lib/python3.12, а не в Python.framework/lib
-PYTHON_LIB="${PYTHON_PLATFORM}/lib/python3.12"
-PYTHON_LIB_DEST="${APP_DIR}/python/lib/python3.12"
+# В xcframework стандартная библиотека находится в lib/python3.13, а не в Python.framework/lib
+PYTHON_LIB="${PYTHON_PLATFORM}/lib/python3.13"
+PYTHON_LIB_DEST="${APP_DIR}/python/lib/python3.13"
 
 if [ -d "${PYTHON_LIB}" ]; then
     echo "Copying Python standard library from ${PYTHON_LIB}..."
@@ -316,7 +316,7 @@ fi
 
 # Устанавливаем зависимости pymax в site-packages
 # Это нужно сделать до копирования pymax, так как pymax зависит от этих библиотек
-SITE_PACKAGES_DIR="${APP_DIR}/python/lib/python3.12/site-packages"
+SITE_PACKAGES_DIR="${APP_DIR}/python/lib/python3.13/site-packages"
 if [ -d "${PYTHON_LIB_DEST}" ]; then
     echo "Installing pymax dependencies to site-packages..."
     mkdir -p "${SITE_PACKAGES_DIR}"
@@ -325,18 +325,26 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
     # Устанавливаем все зависимости из pyproject.toml
     # Некоторые пакеты могут содержать бинарные модули, которые нужно собрать для iOS отдельно
     
-    # Сначала проверяем наличие собранного lz4 wheel для iOS (до проверки pip)
-    LZ4_WHEEL_DIR="${PROJECT_DIR}/BuildScripts"
-    LZ4_WHEEL=$(find "${LZ4_WHEEL_DIR}" -name "lz4-*.whl" -type f 2>/dev/null | head -1)
+    # Сначала проверяем наличие собранных iOS wheels (до проверки pip)
+    WHEEL_DIR="${PROJECT_DIR}/BuildScripts"
+    LZ4_WHEEL=$(find "${WHEEL_DIR}" -name "lz4-*.whl" -type f 2>/dev/null | head -1)
+    PYDANTIC_CORE_WHEEL=$(find "${WHEEL_DIR}" -name "pydantic_core-*.whl" -type f 2>/dev/null | head -1)
+    MSGPACK_WHEEL=$(find "${WHEEL_DIR}" -name "msgpack-*.whl" -type f 2>/dev/null | head -1)
     
     # Проверяем наличие pip
     if command -v pip3 &> /dev/null || python3 -m pip --version &> /dev/null; then
         echo "Installing pymax dependencies..."
         
-        # Определяем, нужен ли lz4 для iOS (исключаем из pip установки на iOS)
+        # Определяем, нужны ли бинарные модули для iOS (исключаем из pip установки на iOS)
         INSTALL_LZ4_VIA_PIP=true
+        INSTALL_PYDANTIC_CORE_VIA_PIP=true
+        INSTALL_MSGPACK_VIA_PIP=true
         if [ "${PLATFORM_NAME}" = "iphoneos" ] || [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
             INSTALL_LZ4_VIA_PIP=false
+            INSTALL_PYDANTIC_CORE_VIA_PIP=false
+            INSTALL_MSGPACK_VIA_PIP=false
+            
+            # Устанавливаем lz4 iOS wheel
             if [ -n "${LZ4_WHEEL}" ]; then
                 echo "Found pre-built lz4 wheel: $(basename "${LZ4_WHEEL}")"
                 echo "Installing iOS-compatible lz4 wheel..."
@@ -390,12 +398,140 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
                 fi
             else
                 echo "⚠️  Warning: No pre-built lz4 wheel found in BuildScripts/"
-                echo "  Looking for: ${LZ4_WHEEL_DIR}/lz4-*.whl"
+                echo "  Looking for: ${WHEEL_DIR}/lz4-*.whl"
                 echo "  lz4 will not work on iOS without a pre-built wheel"
             fi
-        elif [ -n "${LZ4_WHEEL}" ]; then
-            echo "Found pre-built lz4 wheel, but platform is ${PLATFORM_NAME} (not iOS)"
-            echo "Will install lz4 via pip for ${PLATFORM_NAME}"
+            
+            # Устанавливаем pydantic-core iOS wheel
+            if [ -n "${PYDANTIC_CORE_WHEEL}" ]; then
+                echo "Found pre-built pydantic-core wheel: $(basename "${PYDANTIC_CORE_WHEEL}")"
+                echo "Installing iOS-compatible pydantic-core wheel..."
+                
+                # Распаковываем iOS wheel вручную, так как pip не может установить iOS wheels на macOS
+                echo "Extracting iOS pydantic-core wheel manually (pip cannot install iOS wheels on macOS)..."
+                TEMP_WHEEL_DIR=$(mktemp -d)
+                trap "rm -rf ${TEMP_WHEEL_DIR}" EXIT 2>/dev/null || true
+                
+                # Распаковываем wheel (wheel - это zip файл)
+                if unzip -q "${PYDANTIC_CORE_WHEEL}" -d "${TEMP_WHEEL_DIR}" 2>/dev/null; then
+                    # Wheel содержит папку с именем пакета (pydantic_core) и dist-info
+                    # Ищем папку pydantic_core в распакованном wheel
+                    WHEEL_PYDANTIC_CORE_DIR=$(find "${TEMP_WHEEL_DIR}" -type d -name "pydantic_core" | head -1)
+                    WHEEL_DIST_INFO=$(find "${TEMP_WHEEL_DIR}" -type d -name "*.dist-info" | head -1)
+                    
+                    if [ -n "${WHEEL_PYDANTIC_CORE_DIR}" ] && [ -d "${WHEEL_PYDANTIC_CORE_DIR}" ]; then
+                        # Создаем site-packages директорию если её нет
+                        mkdir -p "${SITE_PACKAGES_DIR}"
+                        
+                        # Копируем pydantic_core модуль в site-packages
+                        cp -R "${WHEEL_PYDANTIC_CORE_DIR}" "${SITE_PACKAGES_DIR}/" 2>/dev/null || true
+                        
+                        # Копируем dist-info если есть
+                        if [ -n "${WHEEL_DIST_INFO}" ]; then
+                            cp -R "${WHEEL_DIST_INFO}" "${SITE_PACKAGES_DIR}/" 2>/dev/null || true
+                        fi
+                        
+                        # Проверяем что iOS бинарники скопировались
+                        IOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*iphoneos*.so" -o -name "*iphonesimulator*.so" 2>/dev/null | wc -l | tr -d ' ')
+                        if [ "${IOS_BINARIES}" -gt 0 ]; then
+                            echo "✓ iOS pydantic-core wheel extracted successfully (${IOS_BINARIES} iOS binary modules found)"
+                            INSTALL_PYDANTIC_CORE_VIA_PIP=false
+                        elif [ -d "${SITE_PACKAGES_DIR}/pydantic_core" ]; then
+                            echo "⚠️  Warning: pydantic-core extracted but no iOS binaries found"
+                            INSTALL_PYDANTIC_CORE_VIA_PIP=true
+                        else
+                            echo "⚠️  Warning: Failed to extract pydantic-core from wheel"
+                            INSTALL_PYDANTIC_CORE_VIA_PIP=true
+                        fi
+                    else
+                        echo "⚠️  Warning: Could not find pydantic_core directory in wheel"
+                        INSTALL_PYDANTIC_CORE_VIA_PIP=true
+                    fi
+                    
+                    # Очищаем временную директорию
+                    rm -rf "${TEMP_WHEEL_DIR}"
+                else
+                    echo "⚠️  Warning: Failed to extract wheel file"
+                    INSTALL_PYDANTIC_CORE_VIA_PIP=true
+                fi
+            else
+                echo "⚠️  ⚠️  ⚠️  WARNING: No pre-built pydantic-core wheel found in BuildScripts/"
+                echo "  Looking for: ${WHEEL_DIR}/pydantic_core-*.whl"
+                echo "  ⚠️  CRITICAL: pydantic/sqlmodel will NOT work on iOS without iOS-compatible pydantic-core"
+                INSTALL_PYDANTIC_CORE_VIA_PIP=true
+            fi
+            
+            # Устанавливаем msgpack iOS wheel
+            if [ -n "${MSGPACK_WHEEL}" ]; then
+                echo "Found pre-built msgpack wheel: $(basename "${MSGPACK_WHEEL}")"
+                echo "Installing iOS-compatible msgpack wheel..."
+                
+                # Распаковываем iOS wheel вручную, так как pip не может установить iOS wheels на macOS
+                echo "Extracting iOS msgpack wheel manually (pip cannot install iOS wheels on macOS)..."
+                TEMP_WHEEL_DIR=$(mktemp -d)
+                trap "rm -rf ${TEMP_WHEEL_DIR}" EXIT 2>/dev/null || true
+                
+                # Распаковываем wheel (wheel - это zip файл)
+                if unzip -q "${MSGPACK_WHEEL}" -d "${TEMP_WHEEL_DIR}" 2>/dev/null; then
+                    # Wheel содержит папку с именем пакета (msgpack) и dist-info
+                    # Ищем папку msgpack в распакованном wheel
+                    WHEEL_MSGPACK_DIR=$(find "${TEMP_WHEEL_DIR}" -type d -name "msgpack" | head -1)
+                    WHEEL_DIST_INFO=$(find "${TEMP_WHEEL_DIR}" -type d -name "*.dist-info" | head -1)
+                    
+                    if [ -n "${WHEEL_MSGPACK_DIR}" ] && [ -d "${WHEEL_MSGPACK_DIR}" ]; then
+                        # Создаем site-packages директорию если её нет
+                        mkdir -p "${SITE_PACKAGES_DIR}"
+                        
+                        # Копируем msgpack модуль в site-packages
+                        cp -R "${WHEEL_MSGPACK_DIR}" "${SITE_PACKAGES_DIR}/" 2>/dev/null || true
+                        
+                        # Копируем dist-info если есть
+                        if [ -n "${WHEEL_DIST_INFO}" ]; then
+                            cp -R "${WHEEL_DIST_INFO}" "${SITE_PACKAGES_DIR}/" 2>/dev/null || true
+                        fi
+                        
+                        # Проверяем что iOS бинарники скопировались
+                        IOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/msgpack" -name "*iphoneos*.so" -o -name "*iphonesimulator*.so" 2>/dev/null | wc -l | tr -d ' ')
+                        if [ "${IOS_BINARIES}" -gt 0 ]; then
+                            echo "✓ iOS msgpack wheel extracted successfully (${IOS_BINARIES} iOS binary modules found)"
+                            INSTALL_MSGPACK_VIA_PIP=false
+                        elif [ -d "${SITE_PACKAGES_DIR}/msgpack" ]; then
+                            echo "⚠️  Warning: msgpack extracted but no iOS binaries found"
+                            INSTALL_MSGPACK_VIA_PIP=true
+                        else
+                            echo "⚠️  Warning: Failed to extract msgpack from wheel"
+                            INSTALL_MSGPACK_VIA_PIP=true
+                        fi
+                    else
+                        echo "⚠️  Warning: Could not find msgpack directory in wheel"
+                        INSTALL_MSGPACK_VIA_PIP=true
+                    fi
+                    
+                    # Очищаем временную директорию
+                    rm -rf "${TEMP_WHEEL_DIR}"
+                else
+                    echo "⚠️  Warning: Failed to extract wheel file"
+                    INSTALL_MSGPACK_VIA_PIP=true
+                fi
+            else
+                echo "⚠️  Warning: No pre-built msgpack wheel found in BuildScripts/"
+                echo "  Looking for: ${WHEEL_DIR}/msgpack-*.whl"
+                echo "  msgpack will use pure-Python fallback on iOS without a pre-built wheel"
+                INSTALL_MSGPACK_VIA_PIP=true
+            fi
+        elif [ -n "${LZ4_WHEEL}" ] || [ -n "${PYDANTIC_CORE_WHEEL}" ] || [ -n "${MSGPACK_WHEEL}" ]; then
+            if [ -n "${LZ4_WHEEL}" ]; then
+                echo "Found pre-built lz4 wheel, but platform is ${PLATFORM_NAME} (not iOS)"
+                echo "Will install lz4 via pip for ${PLATFORM_NAME}"
+            fi
+            if [ -n "${PYDANTIC_CORE_WHEEL}" ]; then
+                echo "Found pre-built pydantic-core wheel, but platform is ${PLATFORM_NAME} (not iOS)"
+                echo "Will install pydantic-core via pip for ${PLATFORM_NAME}"
+            fi
+            if [ -n "${MSGPACK_WHEEL}" ]; then
+                echo "Found pre-built msgpack wheel, but platform is ${PLATFORM_NAME} (not iOS)"
+                echo "Will install msgpack via pip for ${PLATFORM_NAME}"
+            fi
         fi
         
         # Создаем временную директорию для установки
@@ -406,17 +542,17 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
         # pip автоматически установит все транзитивные зависимости
         echo "Installing pymax dependencies (this may take a while)..."
         
-        # Основные зависимости из pyproject.toml (без pydantic и sqlmodel)
-        # pip автоматически установит все подзависимости (sqlalchemy, и т.д.)
+        # Основные зависимости из pyproject.toml
+        # pip автоматически установит все подзависимости (sqlalchemy через sqlmodel, и т.д.)
         # Устанавливаем pure-Python версии где возможно, чтобы избежать проблем с бинарными модулями
         # lz4 необходим для Socket клиента (распаковка сжатых данных)
         # ВАЖНО: lz4 требует C расширений, которые нужно компилировать для iOS отдельно
         # На iOS бинарники из macOS не будут работать
         if [ "${INSTALL_LZ4_VIA_PIP}" = "true" ]; then
-            PYMAX_DEPS="sqlalchemy>=2.0.0 aiosqlite>=0.20.0 websockets>=15.0 msgpack>=1.1.1 aiohttp>=3.12.15 aiofiles>=24.1.0 qrcode>=8.2 ua-generator>=2.0.19 lz4>=4.4.4"
+            PYMAX_DEPS="sqlmodel>=0.0.24 websockets>=15.0 msgpack>=1.1.1 aiohttp>=3.12.15 aiofiles>=24.1.0 qrcode>=8.2 ua-generator>=2.0.19 lz4>=4.4.4"
         else
             # Исключаем lz4 из установки через pip на iOS, так как используем pre-built wheel
-            PYMAX_DEPS="sqlalchemy>=2.0.0 aiosqlite>=0.20.0 websockets>=15.0 msgpack>=1.1.1 aiohttp>=3.12.15 aiofiles>=24.1.0 qrcode>=8.2 ua-generator>=2.0.19"
+            PYMAX_DEPS="sqlmodel>=0.0.24 websockets>=15.0 msgpack>=1.1.1 aiohttp>=3.12.15 aiofiles>=24.1.0 qrcode>=8.2 ua-generator>=2.0.19"
             echo "Skipping lz4 in pip install (using pre-built iOS wheel)"
         fi
         
@@ -427,8 +563,11 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
         fi
         # Устанавливаем все зависимости с их транзитивными зависимостями
         # Используем --ignore-installed чтобы установить в целевую директорию
-        # Примечание: бинарные модули (pydantic-core, msgpack, lz4) будут для macOS архитектуры
-        # Для iOS их нужно будет собрать отдельно или использовать pure-Python версии
+        # Примечание: бинарные модули будут для macOS архитектуры
+        # Для iOS их нужно будет собрать отдельно:
+        #   - lz4: обрабатывается отдельно через pre-built iOS wheel (строки 336-395)
+        #   - pydantic-core: КРИТИЧЕСКИ необходим для iOS (pydantic 2.x требует его обязательно)
+        #   - msgpack: может работать в pure-Python режиме (бинарная версия быстрее, но опциональна)
         # ВАЖНО (App Store + iOS): запрещаем сборку/установку C-extension speedups для пакетов,
         # которые имеют pure-Python fallback. Иначе pip на macOS поставит/соберёт darwin *.so,
         # и Transporter/Apple отклонит сборку.
@@ -453,22 +592,44 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
             find "${TEMP_DEPS_DIR}" -maxdepth 1 -type d -name "greenlet-*.dist-info" -exec rm -rf {} \; 2>/dev/null || true
         fi
         
-        # Проверяем наличие pydantic-core (может быть проблемой на iOS)
-        if [ -d "${TEMP_DEPS_DIR}/pydantic_core" ]; then
-            echo "✓ pydantic-core installed (binary module, may need iOS-specific build)"
+        # Проверяем наличие pydantic-core (КРИТИЧЕСКИ необходим для iOS)
+        # pydantic 2.x требует pydantic-core обязательно - без него pydantic/sqlmodel не работают
+        if [ "${INSTALL_PYDANTIC_CORE_VIA_PIP}" = "false" ]; then
+            # iOS wheel уже установлен, проверяем его
+            if [ -d "${SITE_PACKAGES_DIR}/pydantic_core" ]; then
+                IOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*iphoneos*.so" -o -name "*iphonesimulator*.so" 2>/dev/null | wc -l | tr -d ' ')
+                if [ "${IOS_BINARIES}" -gt 0 ]; then
+                    echo "✓ pydantic-core iOS wheel already installed (${IOS_BINARIES} iOS binary modules)"
+                else
+                    echo "⚠️  Warning: pydantic-core iOS wheel installed but no iOS binaries found"
+                fi
+            else
+                echo "⚠️  Warning: pydantic-core iOS wheel should be installed but directory not found"
+            fi
+        elif [ -d "${TEMP_DEPS_DIR}/pydantic_core" ]; then
+            echo "✓ pydantic-core installed via pip (binary module, macOS architecture)"
             # Проверяем наличие бинарного модуля
             if find "${TEMP_DEPS_DIR}/pydantic_core" -name "_pydantic_core*.so" -o -name "_pydantic_core*.dylib" | grep -q .; then
-                echo "  Binary module found (macOS architecture)"
-                echo "  Note: This will need to be compiled for iOS separately"
+                if [ "${PLATFORM_NAME}" = "iphoneos" ] || [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
+                    echo "  ⚠️  Binary module found (macOS architecture)"
+                    echo "  ⚠️  CRITICAL: iOS requires pydantic-core wheel built for iphoneos/iphonesimulator"
+                    echo "  ⚠️  pydantic/sqlmodel will NOT work on iOS without iOS-compatible pydantic-core"
+                    echo "  ⚠️  Place iOS wheel in BuildScripts/ directory"
+                fi
             fi
         else
-            echo "Warning: pydantic-core not found (pydantic may not work)"
+            if [ "${PLATFORM_NAME}" = "iphoneos" ] || [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
+                echo "❌ ERROR: pydantic-core not found (pydantic/sqlmodel will not work)"
+                echo "  ⚠️  Place iOS wheel in BuildScripts/ directory"
+            else
+                echo "⚠️  Warning: pydantic-core not found (pydantic/sqlmodel may not work)"
+            fi
         fi
         
         # Копируем установленные пакеты в site-packages
         if [ -d "${TEMP_DEPS_DIR}" ] && [ "$(ls -A ${TEMP_DEPS_DIR} 2>/dev/null)" ]; then
             echo "Copying installed packages to site-packages..."
-            # Копируем все установленные пакеты, но не перезаписываем lz4 если уже установлен iOS wheel
+            # Копируем все установленные пакеты, но не перезаписываем iOS wheels если уже установлены
             if [ -d "${SITE_PACKAGES_DIR}/lz4" ] && [ "${INSTALL_LZ4_VIA_PIP}" = "false" ]; then
                 echo "  Preserving pre-installed iOS lz4, skipping macOS version from pip"
                 # Удаляем macOS версию lz4 из временной директории чтобы не перезаписать iOS версию
@@ -480,6 +641,34 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
                 if find "${TEMP_DEPS_DIR}" -type d -name "lz4-*.dist-info" | grep -q .; then
                     find "${TEMP_DEPS_DIR}" -type d -name "lz4-*.dist-info" -exec rm -rf {} \; 2>/dev/null || true
                     echo "    Removed macOS lz4 dist-info to preserve iOS version"
+                fi
+            fi
+            
+            if [ -d "${SITE_PACKAGES_DIR}/pydantic_core" ] && [ "${INSTALL_PYDANTIC_CORE_VIA_PIP}" = "false" ]; then
+                echo "  Preserving pre-installed iOS pydantic-core, skipping macOS version from pip"
+                # Удаляем macOS версию pydantic_core из временной директории чтобы не перезаписать iOS версию
+                if [ -d "${TEMP_DEPS_DIR}/pydantic_core" ]; then
+                    rm -rf "${TEMP_DEPS_DIR}/pydantic_core"
+                    echo "    Removed macOS pydantic_core from pip install to preserve iOS version"
+                fi
+                # Также удаляем dist-info для macOS pydantic_core если есть
+                if find "${TEMP_DEPS_DIR}" -type d -name "pydantic_core-*.dist-info" | grep -q .; then
+                    find "${TEMP_DEPS_DIR}" -type d -name "pydantic_core-*.dist-info" -exec rm -rf {} \; 2>/dev/null || true
+                    echo "    Removed macOS pydantic_core dist-info to preserve iOS version"
+                fi
+            fi
+            
+            if [ -d "${SITE_PACKAGES_DIR}/msgpack" ] && [ "${INSTALL_MSGPACK_VIA_PIP}" = "false" ]; then
+                echo "  Preserving pre-installed iOS msgpack, skipping macOS version from pip"
+                # Удаляем macOS версию msgpack из временной директории чтобы не перезаписать iOS версию
+                if [ -d "${TEMP_DEPS_DIR}/msgpack" ]; then
+                    rm -rf "${TEMP_DEPS_DIR}/msgpack"
+                    echo "    Removed macOS msgpack from pip install to preserve iOS version"
+                fi
+                # Также удаляем dist-info для macOS msgpack если есть
+                if find "${TEMP_DEPS_DIR}" -type d -name "msgpack-*.dist-info" | grep -q .; then
+                    find "${TEMP_DEPS_DIR}" -type d -name "msgpack-*.dist-info" -exec rm -rf {} \; 2>/dev/null || true
+                    echo "    Removed macOS msgpack dist-info to preserve iOS version"
                 fi
             fi
             # Копируем все установленные пакеты
@@ -509,6 +698,52 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
                         done
                     else
                         echo "    ⚠️  No binary modules found in lz4 (may be pure-Python or missing)"
+                    fi
+                fi
+                
+                # Проверяем наличие pydantic-core и его бинарных модулей
+                if [ -d "${SITE_PACKAGES_DIR}/pydantic_core" ]; then
+                    echo "  Checking pydantic-core module..."
+                    PYDANTIC_CORE_BINARIES=$(find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*.so" -o -name "*.dylib" 2>/dev/null | wc -l | tr -d ' ')
+                    if [ "${PYDANTIC_CORE_BINARIES}" -gt 0 ]; then
+                        echo "    Found ${PYDANTIC_CORE_BINARIES} pydantic-core binary module(s)"
+                        # Проверяем архитектуру бинарных модулей pydantic-core
+                        find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*.so" -o -name "*.dylib" | while read -r so_file; do
+                            BINARY_NAME=$(basename "${so_file}")
+                            # Проверяем, это macOS или iOS бинарник
+                            if echo "${BINARY_NAME}" | grep -q "\.cpython-.*-darwin\.so\|\.darwin\.so"; then
+                                echo "      ⚠️  Warning: macOS binary detected: ${BINARY_NAME}"
+                                echo "      ⚠️  iOS requires: .cpython-313-iphoneos.so or .cpython-39-iphoneos.so"
+                                echo "      ⚠️  This binary will NOT work on iOS device/simulator"
+                            elif echo "${BINARY_NAME}" | grep -q "iphoneos\|iphonesimulator"; then
+                                echo "      ✓ iOS binary found: ${BINARY_NAME}"
+                            fi
+                        done
+                    else
+                        echo "    ⚠️  No binary modules found in pydantic-core (may be pure-Python or missing)"
+                    fi
+                fi
+                
+                # Проверяем наличие msgpack и его бинарных модулей
+                if [ -d "${SITE_PACKAGES_DIR}/msgpack" ]; then
+                    echo "  Checking msgpack module..."
+                    MSGPACK_BINARIES=$(find "${SITE_PACKAGES_DIR}/msgpack" -name "*.so" -o -name "*.dylib" 2>/dev/null | wc -l | tr -d ' ')
+                    if [ "${MSGPACK_BINARIES}" -gt 0 ]; then
+                        echo "    Found ${MSGPACK_BINARIES} msgpack binary module(s)"
+                        # Проверяем архитектуру бинарных модулей msgpack
+                        find "${SITE_PACKAGES_DIR}/msgpack" -name "*.so" -o -name "*.dylib" | while read -r so_file; do
+                            BINARY_NAME=$(basename "${so_file}")
+                            # Проверяем, это macOS или iOS бинарник
+                            if echo "${BINARY_NAME}" | grep -q "\.cpython-.*-darwin\.so\|\.darwin\.so"; then
+                                echo "      ⚠️  Warning: macOS binary detected: ${BINARY_NAME}"
+                                echo "      ⚠️  iOS requires: .cpython-313-iphoneos.so or .cpython-39-iphoneos.so"
+                                echo "      ⚠️  This binary will NOT work on iOS device/simulator"
+                            elif echo "${BINARY_NAME}" | grep -q "iphoneos\|iphonesimulator"; then
+                                echo "      ✓ iOS binary found: ${BINARY_NAME}"
+                            fi
+                        done
+                    else
+                        echo "    ⚠️  No binary modules found in msgpack (using pure-Python fallback)"
                     fi
                 fi
                 
@@ -547,7 +782,7 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
     
     # Если есть предустановленные зависимости в Python.xcframework, копируем их
     # Это важно, так как там могут быть iOS-совместимые бинарники
-    XCFRAMEWORK_SITE_PACKAGES="${PYTHON_PLATFORM}/lib/python3.12/site-packages"
+    XCFRAMEWORK_SITE_PACKAGES="${PYTHON_PLATFORM}/lib/python3.13/site-packages"
     if [ -d "${XCFRAMEWORK_SITE_PACKAGES}" ]; then
         echo "Copying pre-installed packages from xcframework..."
         cp -R "${XCFRAMEWORK_SITE_PACKAGES}"/* "${SITE_PACKAGES_DIR}/" 2>/dev/null || true
@@ -590,7 +825,7 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
                 echo "  3. The script will automatically install it on next build"
                 echo ""
                 if [ -z "${LZ4_WHEEL}" ]; then
-                    echo "  Expected location: ${LZ4_WHEEL_DIR}/lz4-*.whl"
+                    echo "  Expected location: ${WHEEL_DIR}/lz4-*.whl"
                 else
                     echo "  Found wheel but installation may have failed: ${LZ4_WHEEL}"
                 fi
@@ -606,7 +841,7 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
                 echo "  2. Place the wheel file (.whl) in BuildScripts/ directory"
                 echo ""
                 if [ -z "${LZ4_WHEEL}" ]; then
-                    echo "  Expected location: ${LZ4_WHEEL_DIR}/lz4-*.whl"
+                    echo "  Expected location: ${WHEEL_DIR}/lz4-*.whl"
                 fi
                 echo ""
             fi
@@ -621,9 +856,107 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
             echo "  3. The script will automatically install it on next build"
             echo ""
             if [ -z "${LZ4_WHEEL}" ]; then
-                echo "  Expected location: ${LZ4_WHEEL_DIR}/lz4-*.whl"
+                echo "  Expected location: ${WHEEL_DIR}/lz4-*.whl"
             fi
             echo ""
+        fi
+        
+        # Финальная проверка pydantic-core для iOS
+        if [ -d "${SITE_PACKAGES_DIR}/pydantic_core" ]; then
+            PYDANTIC_CORE_IOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*iphoneos*.so" -o -name "*iphonesimulator*.so" 2>/dev/null | wc -l | tr -d ' ' 2>/dev/null || echo "0")
+            PYDANTIC_CORE_MACOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/pydantic_core" -name "*darwin*.so" 2>/dev/null | wc -l | tr -d ' ' 2>/dev/null || echo "0")
+            
+            if [ "${PYDANTIC_CORE_IOS_BINARIES}" -gt 0 ]; then
+                echo ""
+                echo "✓ pydantic-core iOS installation successful: ${PYDANTIC_CORE_IOS_BINARIES} iOS binary module(s) found"
+                if [ "${PYDANTIC_CORE_MACOS_BINARIES}" -gt 0 ]; then
+                    echo "  ⚠️  Warning: Also found ${PYDANTIC_CORE_MACOS_BINARIES} macOS binary module(s) (these will be ignored on iOS)"
+                fi
+            elif [ "${PYDANTIC_CORE_MACOS_BINARIES}" -gt 0 ]; then
+                echo ""
+                echo "⚠️  ⚠️  ⚠️  WARNING: Only macOS pydantic-core binaries found! ⚠️  ⚠️  ⚠️"
+                echo "Found ${PYDANTIC_CORE_MACOS_BINARIES} macOS binary module(s), but 0 iOS binaries."
+                echo "macOS binaries (.cpython-*-darwin.so) will NOT work on iOS."
+                echo "⚠️  CRITICAL: pydantic/sqlmodel will NOT work on iOS without iOS-compatible pydantic-core"
+                echo ""
+                echo "To fix this:"
+                echo "  1. Build pydantic-core for iOS using mobile-forge"
+                echo "  2. Place the wheel file (.whl) in BuildScripts/ directory"
+                echo "  3. The script will automatically install it on next build"
+                echo ""
+                if [ -z "${PYDANTIC_CORE_WHEEL}" ]; then
+                    echo "  Expected location: ${WHEEL_DIR}/pydantic_core-*.whl"
+                else
+                    echo "  Found wheel but installation may have failed: ${PYDANTIC_CORE_WHEEL}"
+                fi
+                echo ""
+            else
+                echo ""
+                echo "⚠️  ⚠️  ⚠️  WARNING: pydantic-core not found! ⚠️  ⚠️  ⚠️"
+                echo "pydantic-core directory exists but no binary modules found."
+                echo "⚠️  CRITICAL: pydantic/sqlmodel will NOT work on iOS without pydantic-core"
+                echo ""
+                echo "To fix this:"
+                echo "  1. Build pydantic-core for iOS using mobile-forge"
+                echo "  2. Place the wheel file (.whl) in BuildScripts/ directory"
+                echo ""
+                if [ -z "${PYDANTIC_CORE_WHEEL}" ]; then
+                    echo "  Expected location: ${WHEEL_DIR}/pydantic_core-*.whl"
+                fi
+                echo ""
+            fi
+        else
+            echo ""
+            echo "⚠️  ⚠️  ⚠️  WARNING: pydantic-core not installed! ⚠️  ⚠️  ⚠️"
+            echo "pydantic-core requires C extensions compiled for iOS architecture (arm64 iphoneos)."
+            echo "⚠️  CRITICAL: pydantic/sqlmodel will NOT work on iOS without pydantic-core"
+            echo ""
+            echo "To fix this:"
+            echo "  1. Build pydantic-core for iOS using mobile-forge"
+            echo "  2. Place the wheel file (.whl) in BuildScripts/ directory"
+            echo "  3. The script will automatically install it on next build"
+            echo ""
+            if [ -z "${PYDANTIC_CORE_WHEEL}" ]; then
+                echo "  Expected location: ${WHEEL_DIR}/pydantic_core-*.whl"
+            fi
+            echo ""
+        fi
+        
+        # Финальная проверка msgpack для iOS
+        if [ -d "${SITE_PACKAGES_DIR}/msgpack" ]; then
+            MSGPACK_IOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/msgpack" -name "*iphoneos*.so" -o -name "*iphonesimulator*.so" 2>/dev/null | wc -l | tr -d ' ' 2>/dev/null || echo "0")
+            MSGPACK_MACOS_BINARIES=$(find "${SITE_PACKAGES_DIR}/msgpack" -name "*darwin*.so" 2>/dev/null | wc -l | tr -d ' ' 2>/dev/null || echo "0")
+            
+            if [ "${MSGPACK_IOS_BINARIES}" -gt 0 ]; then
+                echo ""
+                echo "✓ msgpack iOS installation successful: ${MSGPACK_IOS_BINARIES} iOS binary module(s) found"
+                if [ "${MSGPACK_MACOS_BINARIES}" -gt 0 ]; then
+                    echo "  ⚠️  Warning: Also found ${MSGPACK_MACOS_BINARIES} macOS binary module(s) (these will be ignored on iOS)"
+                fi
+            elif [ "${MSGPACK_MACOS_BINARIES}" -gt 0 ]; then
+                echo ""
+                echo "⚠️  Warning: Only macOS msgpack binaries found (will use pure-Python fallback on iOS)"
+                echo "Found ${MSGPACK_MACOS_BINARIES} macOS binary module(s), but 0 iOS binaries."
+                echo "macOS binaries (.cpython-*-darwin.so) will NOT work on iOS."
+                echo "msgpack will work in pure-Python mode on iOS, but binary version is faster."
+                echo ""
+                echo "To fix this (optional, for better performance):"
+                echo "  1. Build msgpack for iOS using mobile-forge"
+                echo "  2. Place the wheel file (.whl) in BuildScripts/ directory"
+                echo "  3. The script will automatically install it on next build"
+                echo ""
+                if [ -z "${MSGPACK_WHEEL}" ]; then
+                    echo "  Expected location: ${WHEEL_DIR}/msgpack-*.whl"
+                else
+                    echo "  Found wheel but installation may have failed: ${MSGPACK_WHEEL}"
+                fi
+                echo ""
+            else
+                echo ""
+                echo "⚠️  Info: msgpack installed without binary modules (using pure-Python mode)"
+                echo "msgpack will work, but binary version is faster. Optional: build iOS wheel for better performance."
+                echo ""
+            fi
         fi
     fi
     
@@ -635,6 +968,7 @@ if [ -d "${PYTHON_LIB_DEST}" ]; then
 fi
 
 # Копируем pymax из pymax/src/pymax в app/pymax
+# Исключаем git-связанные файлы и другие ненужные файлы (git submodule)
 PYMAX_SRC="${PYMAX_DIR}/src/pymax"
 PYMAX_DEST="${APP_DIR}/pymax"
 
@@ -647,11 +981,68 @@ if [ -d "${PYMAX_SRC}" ]; then
         rm -rf "${PYMAX_DEST}"
     fi
     
-    cp -R "${PYMAX_SRC}" "${PYMAX_DEST}"
+    # Используем rsync если доступен (лучше для исключений), иначе find + cp
+    if command -v rsync &> /dev/null; then
+        echo "  Using rsync to copy pymax (excluding git files and cache)..."
+        rsync -av --exclude='.git' \
+              --exclude='.gitignore' \
+              --exclude='.gitmodules' \
+              --exclude='.gitattributes' \
+              --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='*.pyo' \
+              --exclude='.pytest_cache' \
+              --exclude='.mypy_cache' \
+              --exclude='.ruff_cache' \
+              --exclude='.DS_Store' \
+              --exclude='*.swp' \
+              --exclude='*.swo' \
+              --exclude='*~' \
+              "${PYMAX_SRC}/" "${PYMAX_DEST}/"
+    else
+        echo "  Using find + cp to copy pymax (excluding git files and cache)..."
+        # Создаем структуру директорий
+        find "${PYMAX_SRC}" -type d ! -path '*/.git*' ! -path '*/__pycache__*' ! -path '*/.pytest_cache*' ! -path '*/.mypy_cache*' ! -path '*/.ruff_cache*' | while read -r dir; do
+            rel_dir="${dir#${PYMAX_SRC}/}"
+            mkdir -p "${PYMAX_DEST}/${rel_dir}" 2>/dev/null || true
+        done
+        
+        # Копируем файлы, исключая ненужные
+        find "${PYMAX_SRC}" -type f \
+             ! -path '*/.git*' \
+             ! -name '.gitignore' \
+             ! -name '.gitmodules' \
+             ! -name '.gitattributes' \
+             ! -path '*/__pycache__*' \
+             ! -name '*.pyc' \
+             ! -name '*.pyo' \
+             ! -path '*/.pytest_cache*' \
+             ! -path '*/.mypy_cache*' \
+             ! -path '*/.ruff_cache*' \
+             ! -name '.DS_Store' \
+             ! -name '*.swp' \
+             ! -name '*.swo' \
+             ! -name '*~' | while read -r file; do
+            rel_file="${file#${PYMAX_SRC}/}"
+            cp "${file}" "${PYMAX_DEST}/${rel_file}" 2>/dev/null || true
+        done
+    fi
+    
+    # Удаляем любые .git директории, которые могли попасть (на всякий случай)
+    find "${PYMAX_DEST}" -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
+    find "${PYMAX_DEST}" -name ".gitignore" -delete 2>/dev/null || true
+    find "${PYMAX_DEST}" -name ".gitmodules" -delete 2>/dev/null || true
+    find "${PYMAX_DEST}" -name ".gitattributes" -delete 2>/dev/null || true
     
     # Проверяем что скопировалось
     if [ -d "${PYMAX_DEST}" ] && [ -f "${PYMAX_DEST}/__init__.py" ]; then
         echo "✓ pymax library copied successfully"
+        
+        # Проверяем что .git не попал
+        if find "${PYMAX_DEST}" -type d -name ".git" | grep -q .; then
+            echo "⚠️  Warning: Found .git directories in pymax, removing..."
+            find "${PYMAX_DEST}" -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
+        fi
     else
         echo "Warning: pymax may not have copied correctly"
     fi
