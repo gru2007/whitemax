@@ -18,65 +18,72 @@ struct CodeVerificationView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Подтверждение")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .padding(.top, 40)
-            
-            Text("Введите код из SMS")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            
-            Text("Отправлено на \(phoneNumber)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Код верификации")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("000000", text: $code)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.center)
-                    .font(.title2)
-                    .onChange(of: code) { oldValue, newValue in
-                        // Ограничиваем ввод 6 цифрами
-                        code = String(newValue.prefix(6).filter { $0.isNumber })
-                    }
-            }
-            .padding(.horizontal)
-            
-            if let error = errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.horizontal)
-            }
-            
-            Button(action: {
-                verifyCode()
-            }) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle())
-                } else {
-                    Text("Войти")
-                        .fontWeight(.semibold)
+        ZStack {
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.18), Color(uiColor: .systemBackground)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .overlay { Rectangle().fill(.ultraThinMaterial).opacity(0.55) }
+
+            VStack(spacing: 18) {
+                VStack(spacing: 8) {
+                    Text("Подтверждение")
+                        .font(.largeTitle.bold())
+                    Text("Введите код из SMS")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.top, 28)
+                .padding(.horizontal, 20)
+
+                Text("Отправлено на \(phoneNumber)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Код")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("000000", text: $code)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .font(.title2.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .liquidGlass(cornerRadius: 16, material: .thinMaterial)
+                        .onChange(of: code) { _, newValue in
+                            // Ограничиваем ввод 6 цифрами
+                            code = String(newValue.prefix(6).filter { $0.isNumber })
+                        }
+                }
+                .padding(.horizontal, 20)
+
+                if let error = errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 20)
+                }
+
+                Button(action: verifyCode) {
+                    if isLoading {
+                        ProgressView()
+                    } else {
+                        Text("Войти")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isLoading || code.count != 6)
+                .padding(.horizontal, 20)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(isLoading || code.count != 6)
-            .padding(.horizontal)
-            
-            Spacer()
         }
-        .padding()
         .navigationBarBackButtonHidden(isLoading)
     }
     
@@ -88,7 +95,7 @@ struct CodeVerificationView: View {
         
         Task {
             do {
-                let user = try await service.loginWithCode(tempToken: tempToken, code: code)
+                _ = try await service.loginWithCode(tempToken: tempToken, code: code)
                 
                 await MainActor.run {
                     self.isLoading = false

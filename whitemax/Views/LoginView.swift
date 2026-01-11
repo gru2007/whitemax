@@ -16,57 +16,69 @@ struct LoginView: View {
     @State private var tempToken: String?
     
     var body: some View {
-        VStack(spacing: 20) {
-            Text("Вход в Max.RU")
-                .font(.largeTitle)
-                .fontWeight(.bold)
-                .padding(.top, 40)
-            
-            Text("Введите номер телефона для получения кода авторизации")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-            
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Номер телефона")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("+79991234567", text: $phoneNumber)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .keyboardType(.phonePad)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-            }
-            .padding(.horizontal)
-            
-            if let error = errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .padding(.horizontal)
-            }
-            
-            Button(action: {
-                requestCode()
-            }) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle())
-                } else {
-                    Text("Отправить код")
-                        .fontWeight(.semibold)
+        ZStack {
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.22), Color(uiColor: .systemBackground)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            .overlay { Rectangle().fill(.ultraThinMaterial).opacity(0.55) }
+
+            VStack(spacing: 18) {
+                VStack(spacing: 8) {
+                    Text("Вход в Max")
+                        .font(.largeTitle.bold())
+                    Text("Введите номер телефона, чтобы получить код авторизации")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Text("Приватность: приложение не запрашивает доступ к вашей галерее/камере. Вы выбираете файлы через системные пикеры.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
+                .padding(.top, 28)
+                .padding(.horizontal, 20)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Номер телефона")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    TextField("+79991234567", text: $phoneNumber)
+                        .keyboardType(.phonePad)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .liquidGlass(cornerRadius: 16, material: .thinMaterial)
+                }
+                .padding(.horizontal, 20)
+
+                if let error = errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 20)
+                }
+
+                Button(action: requestCode) {
+                    if isLoading {
+                        ProgressView()
+                    } else {
+                        Text("Отправить код")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(isLoading || phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.horizontal, 20)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(isLoading || phoneNumber.isEmpty)
-            .padding(.horizontal)
-            
-            Spacer()
         }
-        .padding()
         .navigationDestination(isPresented: $showCodeVerification) {
             if let token = tempToken {
                 CodeVerificationView(phoneNumber: phoneNumber, tempToken: token)

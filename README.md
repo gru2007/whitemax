@@ -1,7 +1,7 @@
 <h1 align="center">WhiteMax</h1>
 
 <p align="center">
-    <strong>Альтернатинвый клиент для Max</strong>
+    <strong>Альтернативный клиент для Max</strong>
 </p>
 
 <p align="center">

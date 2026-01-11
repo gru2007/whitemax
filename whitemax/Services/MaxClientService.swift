@@ -17,8 +17,19 @@ class MaxClientService: ObservableObject {
     @Published var isAuthenticated = false
     @Published var currentUser: MaxUser?
     @Published var pymaxAvailable = false
+
+    // Real-time events from Python wrapper
+    @Published var newMessages: [MaxMessage] = []
+    @Published var updatedMessages: [MaxMessage] = []
+    @Published var deletedMessageIds: [(chatId: Int, messageId: String)] = []
+    @Published var reactionUpdates: [(chatId: Int, messageId: String, reaction: String?)] = []
+
+    // Local caches for UX (no extra permissions; stored in memory only)
+    @Published private(set) var chatsCache: [Int: MaxChat] = [:]
+    let messageIndex = MessageIndex()
     
     private var wrapperModule: PythonObject?
+    private var eventMonitor: EventMonitor?
     
     private init() {
         initializePython()
@@ -61,17 +72,13 @@ class MaxClientService: ObservableObject {
     }
     
     func createWrapper(phone: String, workDir: String? = nil, token: String? = nil) async throws {
-        // Выполняем вызов Python функции в serial queue для thread-safety
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
         guard let module = wrapperModule else {
             throw MaxClientError.notInitialized
         }
         
-        let workDirValue = workDir  // Сохраняем Swift значения
+        let workDirValue = workDir
         let tokenValue = token
-        let jsonString = try await MainActor.run {
-            // Создаем Python объекты в главном потоке
+        let jsonString = try PythonBridge.shared.withPython {
             let workDirPython = workDirValue != nil ? PythonObject(workDirValue!) : PythonObject(Python.None)
             let tokenPython = tokenValue != nil ? PythonObject(tokenValue!) : PythonObject(Python.None)
             let result = module.create_wrapper(phone, workDirPython, tokenPython)
@@ -94,16 +101,12 @@ class MaxClientService: ObservableObject {
     }
     
     func requestCode(phone: String? = nil, language: String = "ru") async throws -> String {
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let phoneValue = phone  // Сохраняем Swift значение
-        let jsonString = try await MainActor.run {
-            // Убеждаемся, что модуль доступен
+        let phoneValue = phone
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
-            
-            // Создаем Python объекты в главном потоке
+
             let phonePython = phoneValue != nil ? PythonObject(phoneValue!) : PythonObject(Python.None)
             let result = module.request_code(phonePython, language)
             return String(result) ?? "{}"
@@ -131,9 +134,7 @@ class MaxClientService: ObservableObject {
             throw MaxClientError.notInitialized
         }
         
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let jsonString = try await MainActor.run {
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
@@ -185,9 +186,7 @@ class MaxClientService: ObservableObject {
             throw MaxClientError.notInitialized
         }
         
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let jsonString = try await MainActor.run {
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
@@ -209,7 +208,7 @@ class MaxClientService: ObservableObject {
             return []
         }
         
-        return chatsArray.compactMap { chatDict in
+        let chats = chatsArray.compactMap { (chatDict: [String: Any]) -> MaxChat? in
             guard let id = chatDict["id"] as? Int,
                   let title = chatDict["title"] as? String else {
                 return nil
@@ -229,6 +228,8 @@ class MaxClientService: ObservableObject {
                 unreadCount: unreadCount
             )
         }
+        chatsCache = Dictionary(uniqueKeysWithValues: chats.map { ($0.id, $0) })
+        return chats
     }
     
     func getMessages(chatId: Int, limit: Int = 50) async throws -> [MaxMessage] {
@@ -236,9 +237,7 @@ class MaxClientService: ObservableObject {
             throw MaxClientError.notInitialized
         }
         
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let jsonString = try await MainActor.run {
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
@@ -260,8 +259,6 @@ class MaxClientService: ObservableObject {
             print("⚠️ No messages array in response: \(json)")
             return []
         }
-        
-        print("✓ Parsing \(messagesArray.count) messages from response for chatId=\(chatId)")
         
         let parsedMessages = messagesArray.compactMap { messageDict -> MaxMessage? in
             // id может быть String или Int, конвертируем в String
@@ -293,6 +290,24 @@ class MaxClientService: ObservableObject {
             // Используем time, если есть, иначе date
             let date = (messageDict["time"] as? Int) ?? (messageDict["date"] as? Int)
             let type = messageDict["type"] as? String
+
+            let replyTo = messageDict["reply_to"] as? String
+
+            let reactions = messageDict["reactions"] as? [String: Int]
+
+            var attachments: [MaxAttachment]? = nil
+            if let rawAttaches = messageDict["attachments"] as? [[String: Any]] {
+                let parsed = rawAttaches.compactMap { a -> MaxAttachment? in
+                    let id = a["id"] as? Int ?? 0
+                    let type = a["type"] as? String ?? "UNKNOWN"
+                    let url = a["url"] as? String
+                    let thumb = a["thumbnail_url"] as? String
+                    let name = a["file_name"] as? String
+                    let size = a["file_size"] as? Int
+                    return MaxAttachment(id: id, type: type, url: url, thumbnailUrl: thumb, fileName: name, fileSize: size)
+                }
+                attachments = parsed.isEmpty ? nil : parsed
+            }
             
             let message = MaxMessage(
                 id: id,
@@ -300,15 +315,612 @@ class MaxClientService: ObservableObject {
                 text: text,
                 senderId: senderId,
                 date: date,
-                type: type
+                type: type,
+                reactions: reactions,
+                isPinned: false,
+                replyTo: replyTo,
+                attachments: attachments,
+                isEdited: false
             )
             
-            print("  ✓ Parsed message: id=\(id), chatId=\(messageChatId), text=\(String(text.prefix(30)))")
             return message
         }
-        
-        print("✓ Successfully parsed \(parsedMessages.count) messages")
+        messageIndex.upsert(chatId: chatId, messages: parsedMessages)
         return parsedMessages
+    }
+
+    func sendMessage(chatId: Int, text: String, replyTo: String? = nil) async throws -> MaxMessage {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let replyPy = replyTo != nil ? PythonObject(replyTo!) : PythonObject(Python.None)
+            let result = module.send_message(chatId, text, replyPy)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.sendMessageFailed(error)
+        }
+
+        guard let msgDict = json["message"] as? [String: Any] else {
+            throw MaxClientError.invalidResponse
+        }
+
+        guard let id = msgDict["id"] as? String else { throw MaxClientError.invalidResponse }
+        guard let resolvedChatId = msgDict["chat_id"] as? Int else { throw MaxClientError.invalidResponse }
+        let msgText = msgDict["text"] as? String ?? ""
+        let senderId = msgDict["sender_id"] as? Int
+        let date = (msgDict["time"] as? Int) ?? (msgDict["date"] as? Int)
+        let type = msgDict["type"] as? String
+
+        return MaxMessage(id: id, chatId: resolvedChatId, text: msgText, senderId: senderId, date: date, type: type)
+    }
+
+    func sendAttachment(
+        chatId: Int,
+        filePath: String,
+        attachmentType: String,
+        text: String = "",
+        replyTo: String? = nil,
+        notify: Bool = true
+    ) async throws -> MaxMessage {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let replyPy = replyTo != nil ? PythonObject(replyTo!) : PythonObject(Python.None)
+            let result = module.send_attachment(chatId, filePath, attachmentType, text, replyPy, notify)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.sendMessageFailed(error)
+        }
+
+        guard let msgDict = json["message"] as? [String: Any] else {
+            throw MaxClientError.invalidResponse
+        }
+
+        guard let id = msgDict["id"] as? String else { throw MaxClientError.invalidResponse }
+        guard let resolvedChatId = msgDict["chat_id"] as? Int else { throw MaxClientError.invalidResponse }
+        let msgText = msgDict["text"] as? String ?? ""
+        let senderId = msgDict["sender_id"] as? Int
+        let date = (msgDict["time"] as? Int) ?? (msgDict["date"] as? Int)
+        let type = msgDict["type"] as? String
+
+        return MaxMessage(id: id, chatId: resolvedChatId, text: msgText, senderId: senderId, date: date, type: type)
+    }
+
+    func editMessage(chatId: Int, messageId: String, text: String) async throws -> MaxMessage {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.edit_message(chatId, messageId, text)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.editMessageFailed(error)
+        }
+
+        guard let msgDict = json["message"] as? [String: Any] else {
+            throw MaxClientError.invalidResponse
+        }
+
+        guard let id = msgDict["id"] as? String else { throw MaxClientError.invalidResponse }
+        guard let resolvedChatId = msgDict["chat_id"] as? Int else { throw MaxClientError.invalidResponse }
+        let msgText = msgDict["text"] as? String ?? ""
+        let senderId = msgDict["sender_id"] as? Int
+        let date = (msgDict["time"] as? Int) ?? (msgDict["date"] as? Int)
+        let type = msgDict["type"] as? String
+
+        return MaxMessage(id: id, chatId: resolvedChatId, text: msgText, senderId: senderId, date: date, type: type, isEdited: true)
+    }
+
+    func deleteMessage(chatId: Int, messageIds: [String], forMe: Bool = true) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            // pass list as Python list
+            let idsPy = PythonObject(messageIds)
+            let result = module.delete_message(chatId, idsPy, forMe)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.deleteMessageFailed(error)
+        }
+    }
+
+    func addReaction(chatId: Int, messageId: String, reaction: String) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.add_reaction(chatId, messageId, reaction)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.reactionFailed(error)
+        }
+    }
+
+    func removeReaction(chatId: Int, messageId: String) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.remove_reaction(chatId, messageId)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.reactionFailed(error)
+        }
+    }
+
+    func pinMessage(chatId: Int, messageId: String, notifyPin: Bool = true) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.pin_message(chatId, messageId, notifyPin)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.pinFailed(error)
+        }
+    }
+
+    func uploadPhoto(filePath: String) async throws -> String {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.upload_photo(filePath)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.uploadFailed(error)
+        }
+
+        guard let token = json["photo_token"] as? String, !token.isEmpty else {
+            throw MaxClientError.invalidResponse
+        }
+        return token
+    }
+
+    func uploadFile(filePath: String) async throws -> Int {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.upload_file(filePath)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.uploadFailed(error)
+        }
+
+        if let fileId = json["file_id"] as? Int {
+            return fileId
+        }
+        if let fileIdStr = json["file_id"] as? String, let fileId = Int(fileIdStr) {
+            return fileId
+        }
+        throw MaxClientError.invalidResponse
+    }
+
+    func updateProfile(firstName: String, lastName: String? = nil, about: String? = nil, photoPath: String? = nil) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let last = lastName != nil ? PythonObject(lastName!) : PythonObject(Python.None)
+            let desc = about != nil ? PythonObject(about!) : PythonObject(Python.None)
+            let photo = photoPath != nil ? PythonObject(photoPath!) : PythonObject(Python.None)
+            let result = module.change_profile(firstName, last, desc, photo)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.profileUpdateFailed(error)
+        }
+
+        // Update visible user name if present
+        if let me = json["me"] as? [String: Any],
+           let id = me["id"] as? Int {
+            let first = me["first_name"] as? String ?? firstName
+            currentUser = MaxUser(id: id, firstName: first)
+        }
+    }
+
+    func getFolders(folderSync: Int = 0) async throws -> [[String: Any]] {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.get_folders(folderSync)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.getFoldersFailed(error)
+        }
+
+        return (json["folders"] as? [[String: Any]]) ?? []
+    }
+
+    func searchUserByPhone(_ phone: String) async throws -> MaxUser {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.search_by_phone(phone)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.searchFailed(error)
+        }
+
+        guard let user = json["user"] as? [String: Any],
+              let id = user["id"] as? Int else {
+            throw MaxClientError.invalidResponse
+        }
+
+        let name = (user["name"] as? String) ?? "User"
+        return MaxUser(id: id, firstName: name.isEmpty ? "User" : name)
+    }
+
+    func resolveChannelByName(_ name: String) async throws -> MaxChat {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.resolve_channel_by_name(name)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        if !success {
+            let error = json["error"] as? String ?? "Unknown error"
+            throw MaxClientError.searchFailed(error)
+        }
+
+        guard let channel = json["channel"] as? [String: Any],
+              let id = channel["id"] as? Int else {
+            throw MaxClientError.invalidResponse
+        }
+
+        let title = (channel["title"] as? String) ?? "Channel"
+        let iconUrl = channel["icon_url"] as? String
+        return MaxChat(id: id, title: title, type: "CHANNEL", photoId: nil, iconUrl: iconUrl, unreadCount: 0)
+    }
+
+    func createFolder(title: String, chatInclude: [Int]) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let includePy = PythonObject(chatInclude)
+            let result = module.create_folder(title, includePy)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.foldersFailed(json["error"] as? String ?? "Unknown error")
+        }
+    }
+
+    func updateFolder(folderId: String, title: String, chatInclude: [Int]?) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let includePy = chatInclude != nil ? PythonObject(chatInclude!) : PythonObject(Python.None)
+            let result = module.update_folder(folderId, title, includePy)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.foldersFailed(json["error"] as? String ?? "Unknown error")
+        }
+    }
+
+    func deleteFolder(folderId: String) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.delete_folder(folderId)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.foldersFailed(json["error"] as? String ?? "Unknown error")
+        }
+    }
+
+    func joinGroup(link: String) async throws -> MaxChat {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.join_group(link)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.joinFailed(json["error"] as? String ?? "Unknown error")
+        }
+
+        guard let chat = json["chat"] as? [String: Any],
+              let id = chat["id"] as? Int else { throw MaxClientError.invalidResponse }
+
+        let title = chat["title"] as? String ?? "Chat"
+        let type = chat["type"] as? String ?? "CHAT"
+        let iconUrl = chat["icon_url"] as? String
+        let resultChat = MaxChat(id: id, title: title, type: type, photoId: nil, iconUrl: iconUrl, unreadCount: 0)
+        chatsCache[id] = resultChat
+        return resultChat
+    }
+
+    func joinChannel(link: String) async throws -> MaxChat {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.join_channel(link)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.joinFailed(json["error"] as? String ?? "Unknown error")
+        }
+
+        guard let chat = json["chat"] as? [String: Any],
+              let id = chat["id"] as? Int else { throw MaxClientError.invalidResponse }
+
+        let title = chat["title"] as? String ?? "Channel"
+        let type = chat["type"] as? String ?? "CHANNEL"
+        let iconUrl = chat["icon_url"] as? String
+        let resultChat = MaxChat(id: id, title: title, type: type, photoId: nil, iconUrl: iconUrl, unreadCount: 0)
+        chatsCache[id] = resultChat
+        return resultChat
+    }
+
+    func leaveGroup(chatId: Int) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.leave_group(chatId)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.leaveFailed(json["error"] as? String ?? "Unknown error")
+        }
+    }
+
+    func leaveChannel(chatId: Int) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.leave_channel(chatId)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.leaveFailed(json["error"] as? String ?? "Unknown error")
+        }
+    }
+
+    func markMessageRead(chatId: Int, messageId: String) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        let jsonString = try PythonBridge.shared.withPython {
+            let result = module.read_message(chatId, messageId)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            let success = json["success"] as? Bool
+        else { throw MaxClientError.invalidResponse }
+
+        if !success {
+            throw MaxClientError.readFailed(json["error"] as? String ?? "Unknown error")
+        }
     }
     
     func startClient() async throws {
@@ -326,9 +938,7 @@ class MaxClientService: ObservableObject {
             try await createWrapper(phone: phone, token: token)
         }
         
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let jsonString = try await MainActor.run {
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
@@ -362,15 +972,128 @@ class MaxClientService: ObservableObject {
             currentUser = MaxUser(id: id, firstName: firstName)
         }
     }
+
+    func startEventMonitoring(eventsDir: String? = nil) async throws {
+        guard let module = wrapperModule else {
+            throw MaxClientError.notInitialized
+        }
+
+        // Ask Python wrapper to register callbacks + tell us events dir
+        let jsonString = try PythonBridge.shared.withPython {
+            let dirPy = eventsDir != nil ? PythonObject(eventsDir!) : PythonObject(Python.None)
+            let result = module.register_event_callbacks(dirPy)
+            return String(result) ?? "{}"
+        }
+
+        guard
+            let jsonData = jsonString.data(using: .utf8),
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+            (json["success"] as? Bool) == true,
+            let eventsDirResolved = json["events_dir"] as? String
+        else {
+            throw MaxClientError.invalidResponse
+        }
+
+        // Restart monitor if needed
+        eventMonitor?.stop()
+        let monitor = EventMonitor(directoryPath: eventsDirResolved)
+        monitor.onEvent = { [weak self] event in
+            guard let self else { return }
+            Task { @MainActor in
+                self.handlePythonEvent(event)
+            }
+        }
+        eventMonitor = monitor
+        monitor.start()
+    }
+
+    func stopEventMonitoring() {
+        eventMonitor?.stop()
+        eventMonitor = nil
+    }
+
+    private func handlePythonEvent(_ event: [String: Any]) {
+        guard let type = event["type"] as? String else { return }
+
+        switch type {
+        case "message_new":
+            if let msg = parseMessageEvent(event) {
+                newMessages.append(msg)
+                messageIndex.upsert(chatId: msg.chatId, messages: [msg])
+            }
+        case "message_edit":
+            if let msg = parseMessageEvent(event) {
+                updatedMessages.append(msg)
+                messageIndex.upsert(chatId: msg.chatId, messages: [msg])
+            }
+        case "message_delete":
+            if let message = event["message"] as? [String: Any],
+               let chatId = message["chat_id"] as? Int,
+               let messageId = message["id"] as? String {
+                deletedMessageIds.append((chatId: chatId, messageId: messageId))
+                messageIndex.delete(chatId: chatId, messageIds: [messageId])
+            }
+        case "reaction_change":
+            if let chatId = event["chat_id"] as? Int,
+               let messageId = event["message_id"] as? String {
+                let info = event["reaction_info"] as? [String: Any]
+                let reaction = info?["your_reaction"] as? String
+                reactionUpdates.append((chatId: chatId, messageId: messageId, reaction: reaction))
+            }
+        default:
+            break
+        }
+    }
+
+    private func parseMessageEvent(_ event: [String: Any]) -> MaxMessage? {
+        guard let message = event["message"] as? [String: Any] else { return nil }
+
+        guard let id = message["id"] as? String else { return nil }
+        guard let chatId = message["chat_id"] as? Int else { return nil }
+
+        let text = message["text"] as? String ?? ""
+        let senderId = message["sender_id"] as? Int
+        let date = (message["time"] as? Int) ?? (message["date"] as? Int)
+        let type = message["type"] as? String
+
+        let replyTo = message["reply_to"] as? String
+        let reactions = message["reactions"] as? [String: Int]
+
+        var attachments: [MaxAttachment]? = nil
+        if let rawAttaches = message["attachments"] as? [[String: Any]] {
+            let parsed = rawAttaches.compactMap { a -> MaxAttachment? in
+                let id = a["id"] as? Int ?? 0
+                let type = a["type"] as? String ?? "UNKNOWN"
+                let url = a["url"] as? String
+                let thumb = a["thumbnail_url"] as? String
+                let name = a["file_name"] as? String
+                let size = a["file_size"] as? Int
+                return MaxAttachment(id: id, type: type, url: url, thumbnailUrl: thumb, fileName: name, fileSize: size)
+            }
+            attachments = parsed.isEmpty ? nil : parsed
+        }
+
+        return MaxMessage(
+            id: id,
+            chatId: chatId,
+            text: text,
+            senderId: senderId,
+            date: date,
+            type: type,
+            reactions: reactions,
+            isPinned: false,
+            replyTo: replyTo,
+            attachments: attachments,
+            isEdited: (event["type"] as? String) == "message_edit"
+        )
+    }
     
     func stopClient() async throws {
         guard let module = wrapperModule else {
             throw MaxClientError.notInitialized
         }
         
-        // Выполняем вызов Python функции в главном потоке
-        // PythonKit требует, чтобы все Python операции выполнялись в потоке, где Python был инициализирован
-        let jsonString = try await MainActor.run {
+        let jsonString = try PythonBridge.shared.withPython {
             guard let module = self.wrapperModule else {
                 return "{\"success\": false, \"error\": \"Module not initialized\"}"
             }
@@ -385,6 +1108,7 @@ class MaxClientService: ObservableObject {
         // Очищаем состояние и токен
         isAuthenticated = false
         currentUser = nil
+        stopEventMonitoring()
         UserDefaults.standard.removeObject(forKey: "max_auth_token")
         UserDefaults.standard.removeObject(forKey: "max_phone_number")
     }
@@ -409,6 +1133,19 @@ enum MaxClientError: LocalizedError {
     case getChatsFailed(String)
     case getMessagesFailed(String)
     case startClientFailed(String)
+    case sendMessageFailed(String)
+    case editMessageFailed(String)
+    case deleteMessageFailed(String)
+    case reactionFailed(String)
+    case pinFailed(String)
+    case uploadFailed(String)
+    case profileUpdateFailed(String)
+    case getFoldersFailed(String)
+    case searchFailed(String)
+    case foldersFailed(String)
+    case joinFailed(String)
+    case leaveFailed(String)
+    case readFailed(String)
     case missingToken
     case invalidUserData
     
@@ -435,6 +1172,32 @@ enum MaxClientError: LocalizedError {
             return "Failed to get messages: \(message)"
         case .startClientFailed(let message):
             return "Failed to start client: \(message)"
+        case .sendMessageFailed(let message):
+            return "Failed to send message: \(message)"
+        case .editMessageFailed(let message):
+            return "Failed to edit message: \(message)"
+        case .deleteMessageFailed(let message):
+            return "Failed to delete message: \(message)"
+        case .reactionFailed(let message):
+            return "Failed to update reaction: \(message)"
+        case .pinFailed(let message):
+            return "Failed to pin message: \(message)"
+        case .uploadFailed(let message):
+            return "Failed to upload attachment: \(message)"
+        case .profileUpdateFailed(let message):
+            return "Failed to update profile: \(message)"
+        case .getFoldersFailed(let message):
+            return "Failed to get folders: \(message)"
+        case .searchFailed(let message):
+            return "Search failed: \(message)"
+        case .foldersFailed(let message):
+            return "Folders operation failed: \(message)"
+        case .joinFailed(let message):
+            return "Join failed: \(message)"
+        case .leaveFailed(let message):
+            return "Leave failed: \(message)"
+        case .readFailed(let message):
+            return "Read marker failed: \(message)"
         case .missingToken:
             return "Missing authentication token"
         case .invalidUserData:

@@ -9,6 +9,8 @@ import json
 import os
 import ssl
 import sys
+import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 # Добавляем текущую директорию в sys.path для поиска модулей
@@ -17,47 +19,57 @@ if _current_dir not in sys.path:
     sys.path.insert(0, _current_dir)
 
 PYMAX_AVAILABLE = False
+_DEBUG = os.environ.get("WHITEMAX_DEBUG") == "1"
+
+
+def _dprint(*args: Any, **kwargs: Any) -> None:
+    if _DEBUG:
+        print(*args, **kwargs)
 try:
     # Пытаемся импортировать pymax
     # Для iOS используем SocketMaxClient вместо MaxClient
     from pymax import SocketMaxClient
+    from pymax.files import File, Photo
     from pymax.payloads import UserAgentPayload
     from pymax.types import Chat, Message
     from pymax.exceptions import SocketNotConnectedError, SocketSendError
     PYMAX_AVAILABLE = True
-    print("✓ pymax imported successfully")
+    _dprint("✓ pymax imported successfully")
 except ImportError as e:
     # Если импорт не удался, создаем заглушки для типов
     import sys
     import os
     import traceback
     
-    print(f"Warning: Failed to import pymax: {e}")
-    print(f"Error type: {type(e).__name__}")
-    print(f"Python path: {sys.path}")
+    _dprint(f"Warning: Failed to import pymax: {e}")
+    _dprint(f"Error type: {type(e).__name__}")
+    _dprint(f"Python path: {sys.path}")
     
     # Проверяем наличие pymax
     app_dir = os.path.dirname(os.path.abspath(__file__))
     pymax_dir = os.path.join(app_dir, "pymax")
-    print(f"Looking for pymax at: {pymax_dir}")
-    print(f"pymax exists: {os.path.exists(pymax_dir)}")
+    _dprint(f"Looking for pymax at: {pymax_dir}")
+    _dprint(f"pymax exists: {os.path.exists(pymax_dir)}")
     
     # Проверяем наличие __init__.py
     pymax_init = os.path.join(pymax_dir, "__init__.py")
     if os.path.exists(pymax_init):
-        print(f"✓ pymax/__init__.py exists")
+        _dprint("✓ pymax/__init__.py exists")
     else:
-        print(f"✗ pymax/__init__.py NOT found")
+        _dprint("✗ pymax/__init__.py NOT found")
     
     # Выводим полный traceback для диагностики
-    print("Full traceback:")
-    traceback.print_exc()
+    if _DEBUG:
+        print("Full traceback:")
+        traceback.print_exc()
     
     # Устанавливаем заглушки
     SocketMaxClient = None
     UserAgentPayload = None
     Chat = None
     Message = None
+    Photo = None
+    File = None
 
 
 class MaxClientWrapper:
@@ -98,6 +110,292 @@ class MaxClientWrapper:
                 except Exception:
                     return None
         return None
+
+    def _message_to_dict(self, msg: Any, fallback_chat_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Конвертировать Message (или dict-подобный объект) в JSON-совместимый dict для Swift."""
+        if msg is None:
+            return None
+
+        try:
+            msg_id = self._get_field(msg, "id", default=None)
+            if msg_id is None:
+                return None
+
+            chat_id = self._get_field(msg, "chat_id", "chatId", default=None)
+            if chat_id is None:
+                chat_id = fallback_chat_id
+            if chat_id is None:
+                return None
+
+            text = self._get_field(msg, "text", default="") or ""
+            sender_id = self._get_field(msg, "sender", "sender_id", "senderId", default=None)
+
+            time_val = self._get_field(msg, "time", default=None)
+            date_val = self._get_field(msg, "date", default=None)
+            time_ms = self._normalize_time_to_int_ms(time_val) or self._normalize_time_to_int_ms(date_val)
+
+            msg_type = self._get_field(msg, "type", default=None)
+            if msg_type is not None:
+                # Enum/value/object tolerant
+                if hasattr(msg_type, "value"):
+                    msg_type = msg_type.value
+                else:
+                    msg_type = str(msg_type)
+
+            # reply link
+            reply_to = None
+            link = self._get_field(msg, "link", default=None)
+            if link is not None:
+                link_type = self._get_field(link, "type", default=None)
+                if hasattr(link_type, "value"):
+                    link_type = link_type.value
+                if str(link_type).upper() == "REPLY":
+                    reply_to = self._get_field(link, "message_id", "messageId", default=None)
+                    if reply_to is not None:
+                        reply_to = str(reply_to)
+
+            # reactions counters
+            reactions: Dict[str, int] = {}
+            reaction_info = self._get_field(msg, "reactionInfo", "reaction_info", default=None)
+            counters = self._get_field(reaction_info, "counters", default=None) if reaction_info is not None else None
+            if isinstance(counters, list):
+                for c in counters:
+                    r = self._get_field(c, "reaction", default=None)
+                    cnt = self._get_field(c, "count", default=0)
+                    if r is not None:
+                        try:
+                            reactions[str(r)] = int(cnt or 0)
+                        except Exception:
+                            reactions[str(r)] = 0
+
+            # attachments
+            attachments: List[Dict[str, Any]] = []
+            attaches = self._get_field(msg, "attaches", default=None)
+            if isinstance(attaches, list):
+                for a in attaches:
+                    a_type = self._get_field(a, "type", default=None)
+                    if hasattr(a_type, "value"):
+                        a_type = a_type.value
+                    a_type_str = str(a_type) if a_type is not None else "UNKNOWN"
+                    if a_type_str.upper() == "PHOTO":
+                        photo_id = self._get_field(a, "photo_id", "photoId", default=None)
+                        base_url = self._get_field(a, "base_url", "baseUrl", default=None)
+                        attachments.append(
+                            {
+                                "id": int(photo_id) if photo_id is not None else 0,
+                                "type": "PHOTO",
+                                "url": base_url,
+                                "thumbnail_url": base_url,
+                                "file_name": None,
+                                "file_size": None,
+                            }
+                        )
+                    elif a_type_str.upper() == "FILE":
+                        file_id = self._get_field(a, "file_id", "fileId", default=None)
+                        name = self._get_field(a, "name", default=None)
+                        size = self._get_field(a, "size", default=None)
+                        attachments.append(
+                            {
+                                "id": int(file_id) if file_id is not None else 0,
+                                "type": "FILE",
+                                "url": None,
+                                "thumbnail_url": None,
+                                "file_name": name,
+                                "file_size": int(size) if size is not None else None,
+                            }
+                        )
+                    elif a_type_str.upper() == "VIDEO":
+                        video_id = self._get_field(a, "video_id", "videoId", default=None)
+                        thumb = self._get_field(a, "thumbnail", default=None)
+                        attachments.append(
+                            {
+                                "id": int(video_id) if video_id is not None else 0,
+                                "type": "VIDEO",
+                                "url": None,
+                                "thumbnail_url": thumb,
+                                "file_name": None,
+                                "file_size": None,
+                            }
+                        )
+
+            return {
+                "id": str(msg_id),
+                "chat_id": int(chat_id),
+                "text": text,
+                "sender_id": sender_id,
+                "date": time_ms,
+                "time": time_ms,
+                "type": msg_type,
+                "reply_to": reply_to,
+                "reactions": reactions if reactions else None,
+                "attachments": attachments if attachments else None,
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            s = value.strip()
+            if s.isdigit():
+                try:
+                    return int(s)
+                except Exception:
+                    return None
+        return None
+
+    @classmethod
+    def _coerce_int_list(cls, value: Any) -> List[int]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            out: List[int] = []
+            for v in value:
+                iv = cls._coerce_int(v)
+                if iv is not None:
+                    out.append(iv)
+            return out
+        one = cls._coerce_int(value)
+        return [one] if one is not None else []
+
+    async def _ensure_connected_and_session(self) -> None:
+        """Убедиться, что socket подключен и сессия (token/me) инициализирована."""
+        if self.client is None:
+            raise RuntimeError("Client not initialized")
+
+        if not getattr(self.client, "is_connected", False):
+            # Закрываем старое соединение если есть
+            if hasattr(self.client, "_socket") and getattr(self.client, "_socket", None):
+                try:
+                    self.client._socket.close()
+                except Exception:
+                    pass
+            self.client.is_connected = False
+
+            await self.client.connect(self.client.user_agent)
+
+            if getattr(self.client, "_token", None):
+                await self.client._sync(self.client.user_agent)
+                await self.client._post_login_tasks(sync=False)
+
+        elif getattr(self.client, "_token", None) and not getattr(self.client, "me", None):
+            await self.client._sync(self.client.user_agent)
+            await self.client._post_login_tasks(sync=False)
+
+    def _reaction_info_to_dict(self, reaction_info: Any) -> Optional[Dict[str, Any]]:
+        """Конвертировать ReactionInfo в JSON-совместимый dict для Swift."""
+        if reaction_info is None:
+            return None
+        try:
+            counters_raw = self._get_field(reaction_info, "counters", default=None) or []
+            counters: List[Dict[str, Any]] = []
+            for c in counters_raw or []:
+                counters.append(
+                    {
+                        "reaction": self._get_field(c, "reaction", default=None),
+                        "count": self._get_field(c, "count", default=0),
+                    }
+                )
+            return {
+                "total_count": self._get_field(
+                    reaction_info, "total_count", "totalCount", default=0
+                ),
+                "your_reaction": self._get_field(
+                    reaction_info, "your_reaction", "yourReaction", default=None
+                ),
+                "counters": counters,
+            }
+        except Exception:
+            return None
+
+    def _emit_event(self, event: Dict[str, Any]) -> None:
+        """Best-effort: сохранить событие в events dir (атомарно), чтобы Swift мог его подхватить."""
+        try:
+            os.makedirs(self._events_dir, exist_ok=True)
+            ts_ms = int(time.time() * 1000)
+            event.setdefault("ts_ms", ts_ms)
+            filename = f"{ts_ms}_{uuid.uuid4().hex}.json"
+            tmp_path = os.path.join(self._events_dir, f".{filename}.tmp")
+            final_path = os.path.join(self._events_dir, filename)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(event, f, ensure_ascii=False)
+            os.replace(tmp_path, final_path)
+        except Exception:
+            # Никогда не падаем из-за событий — это обновления UI.
+            pass
+
+    def get_events_dir(self) -> Dict[str, Any]:
+        return {"success": True, "events_dir": self._events_dir}
+
+    def register_event_callbacks(self, events_dir: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Регистрирует pymax callbacks (message/edit/delete/reaction/chat_update) и пишет события в JSON-файлы.
+        Swift затем мониторит папку через DispatchSource.
+        """
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        if events_dir:
+            self._events_dir = events_dir
+        os.makedirs(self._events_dir, exist_ok=True)
+
+        if self._callbacks_registered:
+            return {"success": True, "events_dir": self._events_dir, "already_registered": True}
+
+        try:
+            async def _on_message(msg: Any) -> None:
+                msg_dict = self._message_to_dict(msg)
+                if msg_dict:
+                    self._emit_event({"type": "message_new", "message": msg_dict})
+
+            async def _on_message_edit(msg: Any) -> None:
+                msg_dict = self._message_to_dict(msg)
+                if msg_dict:
+                    self._emit_event({"type": "message_edit", "message": msg_dict})
+
+            async def _on_message_delete(msg: Any) -> None:
+                msg_dict = self._message_to_dict(msg)
+                if msg_dict:
+                    self._emit_event({"type": "message_delete", "message": msg_dict})
+
+            self.client.on_message()(_on_message)
+            self.client.on_message_edit()(_on_message_edit)
+            self.client.on_message_delete()(_on_message_delete)
+
+            async def _on_reaction_change(message_id: str, chat_id: int, reaction_info: Any) -> None:
+                self._emit_event(
+                    {
+                        "type": "reaction_change",
+                        "chat_id": int(chat_id),
+                        "message_id": str(message_id),
+                        "reaction_info": self._reaction_info_to_dict(reaction_info),
+                    }
+                )
+
+            async def _on_chat_update(chat: Any) -> None:
+                chat_dict = {
+                    "id": self._get_field(chat, "id", default=None),
+                    "title": self._get_field(chat, "title", default="") or "",
+                    "type": self._get_field(chat, "type", default=None),
+                    "icon_url": self._get_field(chat, "base_icon_url", "baseIconUrl", default=None),
+                }
+                self._emit_event({"type": "chat_update", "chat": chat_dict})
+
+            self.client.on_reaction_change(_on_reaction_change)
+            self.client.on_chat_update(_on_chat_update)
+
+            self._callbacks_registered = True
+            return {"success": True, "events_dir": self._events_dir}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     def __init__(self, phone: str, work_dir: Optional[str] = None, token: Optional[str] = None):
         """
@@ -121,6 +419,8 @@ class MaxClientWrapper:
         self.token = token
         self.client: Optional[SocketMaxClient] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._events_dir: str = os.path.join(self.work_dir, "events")
+        self._callbacks_registered: bool = False
         
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Получить или создать event loop."""
@@ -151,9 +451,10 @@ class MaxClientWrapper:
             asyncio.set_event_loop(loop)
             return loop.run_until_complete(coro)
         except Exception as e:
-            print(f"Error in _run_async: {e}")
-            import traceback
-            traceback.print_exc()
+            _dprint(f"Error in _run_async: {e}")
+            if _DEBUG:
+                import traceback
+                traceback.print_exc()
             raise
     
     def create_client(self) -> Dict[str, Any]:
@@ -273,18 +574,18 @@ class MaxClientWrapper:
                 
                 # Убеждаемся, что Socket подключен
                 if not self.client.is_connected:
-                    print(f"⚠️ Socket not connected, connecting...")
+                    _dprint("⚠️ Socket not connected, connecting...")
                     try:
                         await self.client.connect(self.client.user_agent)
-                        print(f"✓ Socket connected")
+                        _dprint("✓ Socket connected")
                     except Exception as conn_error:
                         # Если соединение не удалось, пробуем еще раз
-                        print(f"✗ Connection failed: {conn_error}, retrying...")
+                        _dprint(f"✗ Connection failed: {conn_error}, retrying...")
                         await asyncio.sleep(0.5)  # Небольшая задержка перед повтором
                         await self.client.connect(self.client.user_agent)
-                        print(f"✓ Socket connected after retry")
+                        _dprint("✓ Socket connected after retry")
                 else:
-                    print(f"✓ Socket already connected")
+                    _dprint("✓ Socket already connected")
                 
                 # Небольшая задержка после подключения для полной инициализации сокета
                 await asyncio.sleep(0.2)
@@ -299,22 +600,24 @@ class MaxClientWrapper:
 
                 while retry_count < max_retries:
                     try:
-                        print(f"📤 Attempting login with code (attempt {retry_count + 1}/{max_retries})...")
+                        _dprint(f"📤 Attempting login with code (attempt {retry_count + 1}/{max_retries})...")
 
                         # Проверяем соединение перед попыткой
                         if not self.client.is_connected:
-                            print(f"⚠️ Connection lost before login, reconnecting...")
+                            _dprint("⚠️ Connection lost before login, reconnecting...")
                             await self.client.connect(self.client.user_agent)
                             await asyncio.sleep(0.2)
 
                         await self.client.login_with_code(temp_token, code, start=False)
-                        print(f"✓ Login successful")
+                        _dprint("✓ Login successful")
                         last_error = None
                         break
                     except Exception as login_error:
                         last_error = login_error
                         error_type = type(login_error).__name__
-                        print(f"✗ Login failed (attempt {retry_count + 1}/{max_retries}): {error_type}: {login_error}")
+                        _dprint(
+                            f"✗ Login failed (attempt {retry_count + 1}/{max_retries}): {error_type}: {login_error}"
+                        )
 
                         if _is_code_invalid_error(login_error):
                             # Сервер явно сказал, что код невалиден/устарел/лимит
@@ -342,7 +645,7 @@ class MaxClientWrapper:
 
                         if is_connection_error and retry_count < max_retries - 1:
                             retry_count += 1
-                            print(f"⚠️ Connection error detected ({error_type}), reconnecting and retrying...")
+                            _dprint(f"⚠️ Connection error detected ({error_type}), reconnecting and retrying...")
                             await _reset_connection()
                             await asyncio.sleep(0.5 * retry_count)
                             try:
@@ -364,7 +667,7 @@ class MaxClientWrapper:
                         if last_error
                         else "Login failed: token not available"
                     )
-                    print(f"✗ {error_msg}")
+                    _dprint(f"✗ {error_msg}")
                     return {"success": False, "error": error_msg}
                 
                 # Получаем информацию о текущем пользователе
@@ -408,6 +711,7 @@ class MaxClientWrapper:
         
         try:
             async def _get_chats():
+                # Ensure connected + session initialized
                 # Убеждаемся, что Socket подключен
                 if not self.client.is_connected:
                     try:
@@ -427,6 +731,18 @@ class MaxClientWrapper:
                     # Если подключены, но сессия не инициализирована, инициализируем
                     await self.client._sync(self.client.user_agent)
                     await self.client._post_login_tasks(sync=False)
+
+                # Важно: для нормальных имён диалогов нужно подтянуть пользователей по cid.
+                # pymax умеет это через get_users() (CONTACT_INFO).
+                try:
+                    cids = [d.cid for d in self.client.dialogs if getattr(d, "cid", None)]
+                    # Убираем дубли и None
+                    unique_cids = sorted({int(x) for x in cids if x is not None})
+                    if unique_cids:
+                        await self.client.get_users(unique_cids)
+                except Exception:
+                    # best-effort: не ломаем список чатов, если CONTACT_INFO упал
+                    pass
                 
                 # Собираем все типы чатов: диалоги, чаты и каналы
                 all_chats = []
@@ -517,7 +833,7 @@ class MaxClientWrapper:
                 async def _ensure_connected():
                     """Убедиться, что соединение установлено и сессия инициализирована."""
                     if not self.client.is_connected:
-                        print(f"⚠️ Socket not connected, connecting...")
+                        _dprint("⚠️ Socket not connected, connecting...")
                         try:
                             # Закрываем старое соединение если есть
                             if hasattr(self.client, '_socket') and self.client._socket:
@@ -528,16 +844,16 @@ class MaxClientWrapper:
                             self.client.is_connected = False
                             
                             await self.client.connect(self.client.user_agent)
-                            print(f"✓ Socket connected")
+                            _dprint("✓ Socket connected")
                             
                             # Если есть токен, нужно инициализировать сессию
                             if self.client._token:
-                                print(f"⚠️ Token found, initializing session...")
+                                _dprint("⚠️ Token found, initializing session...")
                                 await self.client._sync(self.client.user_agent)
                                 await self.client._post_login_tasks(sync=False)
-                                print(f"✓ Session initialized")
+                                _dprint("✓ Session initialized")
                         except Exception as conn_error:
-                            print(f"✗ Connection failed: {conn_error}, retrying...")
+                            _dprint(f"✗ Connection failed: {conn_error}, retrying...")
                             # Если соединение не удалось, пробуем еще раз
                             await asyncio.sleep(0.5)
                             await self.client.connect(self.client.user_agent)
@@ -546,10 +862,10 @@ class MaxClientWrapper:
                                 await self.client._post_login_tasks(sync=False)
                     elif self.client._token and not self.client.me:
                         # Если подключены, но сессия не инициализирована, инициализируем
-                        print(f"⚠️ Socket connected but session not initialized, initializing...")
+                        _dprint("⚠️ Socket connected but session not initialized, initializing...")
                         await self.client._sync(self.client.user_agent)
                         await self.client._post_login_tasks(sync=False)
-                        print(f"✓ Session initialized")
+                        _dprint("✓ Session initialized")
                 
                 # Убеждаемся, что Socket подключен и сессия инициализирована
                 await _ensure_connected()
@@ -565,7 +881,7 @@ class MaxClientWrapper:
                     try:
                         # Проверяем соединение перед каждой попыткой
                         if not self.client.is_connected:
-                            print(f"⚠️ Connection lost before fetch_history, reconnecting...")
+                            _dprint("⚠️ Connection lost before fetch_history, reconnecting...")
                             await _ensure_connected()
                         
                         messages = await self.client.fetch_history(chat_id=chat_id, backward=limit, forward=0)
@@ -574,7 +890,10 @@ class MaxClientWrapper:
                         last_error = e
                         error_str = str(e)
                         error_type = type(e).__name__
-                        print(f"✗ Error fetching history for chat_id={chat_id} (attempt {retry_count + 1}/{max_retries}): {error_type}: {e}")
+                        _dprint(
+                            f"✗ Error fetching history for chat_id={chat_id} "
+                            f"(attempt {retry_count + 1}/{max_retries}): {error_type}: {e}"
+                        )
                         
                         # Проверяем, является ли ошибка связанной с соединением
                         # Проверяем по типу исключения (если импортированы) и по строке
@@ -588,7 +907,7 @@ class MaxClientWrapper:
                         )
                         
                         if is_connection_error:
-                            print(f"⚠️ Connection error detected ({error_type}), attempting to reconnect...")
+                            _dprint(f"⚠️ Connection error detected ({error_type}), attempting to reconnect...")
                             retry_count += 1
                             if retry_count < max_retries:
                                 try:
@@ -604,94 +923,621 @@ class MaxClientWrapper:
                                     await asyncio.sleep(0.5 * retry_count)
                                     await _ensure_connected()
                                     
-                                    print(f"✓ Reconnected successfully, retrying fetch_history...")
+                                    _dprint("✓ Reconnected successfully, retrying fetch_history...")
                                     continue  # Пробуем еще раз
                                 except Exception as reconnect_error:
-                                    print(f"✗ Reconnection failed: {reconnect_error}")
+                                    _dprint(f"✗ Reconnection failed: {reconnect_error}")
                                     if retry_count >= max_retries:
-                                        import traceback
-                                        traceback.print_exc()
+                                        if _DEBUG:
+                                            import traceback
+                                            traceback.print_exc()
                                         return {"success": False, "error": f"Failed to reconnect after {max_retries} attempts: {reconnect_error}"}
                             else:
                                 # Последняя попытка не удалась
-                                import traceback
-                                traceback.print_exc()
+                                if _DEBUG:
+                                    import traceback
+                                    traceback.print_exc()
                                 return {"success": False, "error": f"Failed after {max_retries} reconnection attempts: {e}"}
                         else:
                             # Другие ошибки - не повторяем
-                            print(f"✗ Non-connection error, not retrying: {error_type}")
-                            import traceback
-                            traceback.print_exc()
+                            _dprint(f"✗ Non-connection error, not retrying: {error_type}")
+                            if _DEBUG:
+                                import traceback
+                                traceback.print_exc()
                             return {"success": False, "error": str(e)}
                 
                 # Если после всех попыток не удалось получить сообщения
                 if messages is None:
                     error_msg = f"Failed to fetch messages after {max_retries} attempts: {last_error}" if last_error else "Unknown error"
-                    print(f"✗ {error_msg}")
+                    _dprint(f"✗ {error_msg}")
                     return {"success": False, "error": error_msg}
                 
                 # Проверяем, что сообщения получены
                 if messages is None:
-                    print(f"⚠️ fetch_history returned None for chat_id={chat_id}")
+                    _dprint(f"⚠️ fetch_history returned None for chat_id={chat_id}")
                     messages = []
                 
-                print(f"📨 Fetched {len(messages) if messages else 0} messages from API for chat_id={chat_id}")
+                _dprint(f"📨 Fetched {len(messages) if messages else 0} messages from API for chat_id={chat_id}")
                 
                 # Конвертируем в JSON-совместимый формат и сортируем по времени (старые первыми, новые последними)
                 messages_list = []
-                for idx, msg in enumerate(messages or []):
-                    try:
-                        # Безопасно получаем атрибуты сообщения
-                        msg_id = getattr(msg, 'id', None)
-                        if msg_id is None:
-                            print(f"⚠️ Message {idx} has no id, skipping")
-                            continue
-                        
-                        msg_text = getattr(msg, 'text', '') or ""
-                        msg_time = getattr(msg, 'time', None)
-                        msg_time_ms = self._normalize_time_to_int_ms(msg_time)
-                        msg_sender = getattr(msg, 'sender', None) or getattr(msg, 'sender_id', None)
-                        
-                        # Получаем chat_id из сообщения, если есть, иначе используем переданный
-                        msg_chat_id = getattr(msg, 'chat_id', None)
-                        if msg_chat_id is None:
-                            msg_chat_id = chat_id
-                        # Всегда гарантируем, что chat_id не None
-                        if msg_chat_id is None:
-                            print(f"⚠️ Message {idx} has no chat_id and none provided, skipping")
-                            continue
-                        
-                        msg_dict = {
-                            "id": str(msg_id),  # Всегда строка для совместимости
-                            "chat_id": msg_chat_id,  # Всегда число, не None
-                            "text": msg_text,
-                            "sender_id": msg_sender,
-                            "date": msg_time_ms,  # Swift ожидает Int?
-                            "time": msg_time_ms,  # Внутренняя сортировка/отладка
-                            "type": msg.type.value if hasattr(msg.type, 'value') else str(msg.type) if hasattr(msg, 'type') else None,
-                        }
+                for msg in (messages or []):
+                    msg_dict = self._message_to_dict(msg, fallback_chat_id=chat_id)
+                    if msg_dict:
                         messages_list.append(msg_dict)
-                        print(f"  Message {idx}: id={msg_id}, text={msg_text[:30]}, time={msg_time}")
-                    except Exception as e:
-                        print(f"⚠️ Error processing message {idx}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
                 
                 # Сортируем по времени (старые первыми, новые последними)
                 messages_list.sort(key=lambda x: x.get("time", 0) or 0)
-                
-                # Добавляем отладочную информацию
-                print(f"✓ Processed {len(messages_list)} messages for chat_id={chat_id}")
-                if messages_list:
-                    print(f"  First message: id={messages_list[0].get('id')}, text={messages_list[0].get('text', '')[:50]}")
-                    print(f"  Last message: id={messages_list[-1].get('id')}, text={messages_list[-1].get('text', '')[:50]}")
-                else:
-                    print(f"  ⚠️ No messages to return")
-                
+
                 return {"success": True, "messages": messages_list}
             
             return self._run_async(_get_messages())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def send_message(self, chat_id: int, text: str, reply_to: Optional[Any] = None) -> Dict[str, Any]:
+        """Отправить сообщение в чат."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        reply_to_int = self._coerce_int(reply_to)
+
+        try:
+            async def _send():
+                await self._ensure_connected_and_session()
+                msg = await self.client.send_message(
+                    text=text,
+                    chat_id=chat_id,
+                    reply_to=reply_to_int,
+                    notify=True,
+                )
+                msg_dict = self._message_to_dict(msg, fallback_chat_id=chat_id)
+                if not msg_dict:
+                    return {"success": False, "error": "Invalid message response"}
+                return {"success": True, "message": msg_dict}
+
+            return self._run_async(_send())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def edit_message(self, chat_id: int, message_id: Any, text: str) -> Dict[str, Any]:
+        """Редактировать сообщение."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        message_id_int = self._coerce_int(message_id)
+        if message_id_int is None:
+            return {"success": False, "error": "Invalid message_id"}
+
+        try:
+            async def _edit():
+                await self._ensure_connected_and_session()
+                msg = await self.client.edit_message(
+                    chat_id=chat_id,
+                    message_id=message_id_int,
+                    text=text,
+                )
+                msg_dict = self._message_to_dict(msg, fallback_chat_id=chat_id)
+                if not msg_dict:
+                    return {"success": False, "error": "Invalid message response"}
+                return {"success": True, "message": msg_dict}
+
+            return self._run_async(_edit())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_message(self, chat_id: int, message_ids: Any, for_me: bool = True) -> Dict[str, Any]:
+        """Удалить одно или несколько сообщений."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        ids = self._coerce_int_list(message_ids)
+        if not ids:
+            return {"success": False, "error": "Invalid message_ids"}
+
+        try:
+            async def _delete():
+                await self._ensure_connected_and_session()
+                ok = await self.client.delete_message(
+                    chat_id=chat_id,
+                    message_ids=ids,
+                    for_me=for_me,
+                )
+                return {"success": True, "deleted": bool(ok), "message_ids": [str(i) for i in ids]}
+
+            return self._run_async(_delete())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def pin_message(self, chat_id: int, message_id: Any, notify_pin: bool = True) -> Dict[str, Any]:
+        """Закрепить сообщение."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        message_id_int = self._coerce_int(message_id)
+        if message_id_int is None:
+            return {"success": False, "error": "Invalid message_id"}
+
+        try:
+            async def _pin():
+                await self._ensure_connected_and_session()
+                ok = await self.client.pin_message(chat_id=chat_id, message_id=message_id_int, notify_pin=notify_pin)
+                return {"success": True, "pinned": bool(ok), "message_id": str(message_id_int)}
+
+            return self._run_async(_pin())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def add_reaction(self, chat_id: int, message_id: Any, reaction: str) -> Dict[str, Any]:
+        """Добавить реакцию (emoji) к сообщению."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        # pymax ожидает message_id: str
+        msg_id_str = str(message_id) if message_id is not None else ""
+        if not msg_id_str:
+            return {"success": False, "error": "Invalid message_id"}
+
+        try:
+            async def _add():
+                await self._ensure_connected_and_session()
+                info = await self.client.add_reaction(chat_id=chat_id, message_id=msg_id_str, reaction=reaction)
+                info_dict = self._reaction_info_to_dict(info)
+                return {"success": True, "reaction_info": info_dict}
+
+            return self._run_async(_add())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def remove_reaction(self, chat_id: int, message_id: Any) -> Dict[str, Any]:
+        """Удалить свою реакцию с сообщения."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+
+        msg_id_str = str(message_id) if message_id is not None else ""
+        if not msg_id_str:
+            return {"success": False, "error": "Invalid message_id"}
+
+        try:
+            async def _remove():
+                await self._ensure_connected_and_session()
+                info = await self.client.remove_reaction(chat_id=chat_id, message_id=msg_id_str)
+                info_dict = self._reaction_info_to_dict(info)
+                return {"success": True, "reaction_info": info_dict}
+
+            return self._run_async(_remove())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def upload_photo(self, file_path: str) -> Dict[str, Any]:
+        """Загрузить фото и вернуть attach payload (photo_token) для последующей отправки."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if Photo is None:
+            return {"success": False, "error": "pymax Photo not available"}
+        if not file_path or not os.path.exists(file_path):
+            return {"success": False, "error": "File not found"}
+
+        try:
+            async def _upload():
+                await self._ensure_connected_and_session()
+                attach = await self.client._upload_attachment(Photo(path=file_path))
+                if not attach:
+                    return {"success": False, "error": "Upload failed"}
+                # attach is a dict, typically contains photoToken
+                photo_token = None
+                if isinstance(attach, dict):
+                    photo_token = attach.get("photoToken") or attach.get("photo_token")
+                return {"success": True, "attach": attach, "photo_token": photo_token}
+
+            return self._run_async(_upload())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def upload_file(self, file_path: str) -> Dict[str, Any]:
+        """Загрузить файл и вернуть attach payload (file_id) для последующей отправки."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if File is None:
+            return {"success": False, "error": "pymax File not available"}
+        if not file_path or not os.path.exists(file_path):
+            return {"success": False, "error": "File not found"}
+
+        try:
+            async def _upload():
+                await self._ensure_connected_and_session()
+                attach = await self.client._upload_attachment(File(path=file_path))
+                if not attach:
+                    return {"success": False, "error": "Upload failed"}
+                file_id = None
+                if isinstance(attach, dict):
+                    file_id = attach.get("fileId") or attach.get("file_id")
+                return {"success": True, "attach": attach, "file_id": file_id}
+
+            return self._run_async(_upload())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def send_attachment(
+        self,
+        chat_id: int,
+        file_path: str,
+        attachment_type: str = "file",
+        text: str = "",
+        reply_to: Optional[Any] = None,
+        notify: bool = True,
+    ) -> Dict[str, Any]:
+        """Отправить вложение (photo/file) в чат без запроса доступов к галерее (Swift передаёт локальный temp path)."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not file_path or not os.path.exists(file_path):
+            return {"success": False, "error": "File not found"}
+
+        at = (attachment_type or "file").lower().strip()
+        reply_to_int = self._coerce_int(reply_to)
+
+        try:
+            async def _send():
+                await self._ensure_connected_and_session()
+
+                attachment_obj = None
+                if at in ("photo", "image", "img"):
+                    if Photo is None:
+                        return {"success": False, "error": "pymax Photo not available"}
+                    attachment_obj = Photo(path=file_path)
+                else:
+                    if File is None:
+                        return {"success": False, "error": "pymax File not available"}
+                    attachment_obj = File(path=file_path)
+
+                msg = await self.client.send_message(
+                    text=text or "",
+                    chat_id=chat_id,
+                    notify=notify,
+                    attachment=attachment_obj,
+                    reply_to=reply_to_int,
+                )
+                msg_dict = self._message_to_dict(msg, fallback_chat_id=chat_id)
+                if not msg_dict:
+                    return {"success": False, "error": "Invalid message response"}
+                return {"success": True, "message": msg_dict}
+
+            return self._run_async(_send())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def change_profile(
+        self,
+        first_name: str,
+        last_name: Optional[str] = None,
+        description: Optional[str] = None,
+        photo_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Изменить профиль текущего пользователя (имя/описание/аватар)."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not first_name:
+            return {"success": False, "error": "first_name required"}
+
+        photo_obj = None
+        if photo_path:
+            if Photo is None:
+                return {"success": False, "error": "pymax Photo not available"}
+            if not os.path.exists(photo_path):
+                return {"success": False, "error": "Photo file not found"}
+            photo_obj = Photo(path=photo_path)
+
+        try:
+            async def _change():
+                await self._ensure_connected_and_session()
+                ok = await self.client.change_profile(
+                    first_name=first_name,
+                    last_name=last_name,
+                    description=description,
+                    photo=photo_obj,
+                )
+                me_info = None
+                if getattr(self.client, "me", None):
+                    names = self._get_field(self.client.me, "names", default=None)
+                    first = ""
+                    if names and isinstance(names, list) and len(names) > 0:
+                        n0 = names[0]
+                        first = (
+                            self._get_field(n0, "first_name", "firstName", default=None)
+                            or self._get_field(n0, "name", default=None)
+                            or ""
+                        )
+                    me_info = {
+                        "id": self._get_field(self.client.me, "id", default=0),
+                        "first_name": first,
+                        "phone": self._get_field(self.client.me, "phone", default=None) or self.phone,
+                    }
+                return {"success": True, "updated": bool(ok), "me": me_info}
+
+            return self._run_async(_change())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_folders(self, folder_sync: int = 0) -> Dict[str, Any]:
+        """Получить папки (folders) пользователя."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        try:
+            async def _get():
+                await self._ensure_connected_and_session()
+                fl = await self.client.get_folders(folder_sync=folder_sync)
+                # best-effort serialization
+                folders = []
+                for f in getattr(fl, "folders", []) or []:
+                    folders.append(
+                        {
+                            "id": self._get_field(f, "id", default=None),
+                            "title": self._get_field(f, "title", default="") or "",
+                            "include": self._get_field(f, "include", default=[]) or [],
+                        }
+                    )
+                return {"success": True, "folders": folders}
+
+            return self._run_async(_get())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def fetch_chats(self, marker: Optional[int] = None) -> Dict[str, Any]:
+        """Загрузить список чатов с сервера (CHATS_LIST)."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        try:
+            async def _fetch():
+                await self._ensure_connected_and_session()
+                chats = await self.client.fetch_chats(marker=marker)
+                out = []
+                for chat in chats or []:
+                    out.append(
+                        {
+                            "id": self._get_field(chat, "id", default=None),
+                            "title": self._get_field(chat, "title", default="") or "",
+                            "type": "CHAT",
+                            "icon_url": self._get_field(chat, "base_icon_url", "baseIconUrl", default=None),
+                        }
+                    )
+                return {"success": True, "chats": out}
+
+            return self._run_async(_fetch())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def search_by_phone(self, phone: str) -> Dict[str, Any]:
+        """Поиск пользователя по номеру телефона."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not phone:
+            return {"success": False, "error": "phone required"}
+
+        try:
+            async def _search():
+                await self._ensure_connected_and_session()
+                user = await self.client.search_by_phone(phone)
+                names = self._get_field(user, "names", default=None)
+                display = None
+                if names and isinstance(names, list) and len(names) > 0:
+                    n0 = names[0]
+                    display = (
+                        self._get_field(n0, "name", default=None)
+                        or self._get_field(n0, "first_name", "firstName", default=None)
+                    )
+                return {
+                    "success": True,
+                    "user": {
+                        "id": self._get_field(user, "id", default=None),
+                        "name": display or "",
+                        "photo_id": self._get_field(user, "photo_id", "photoId", default=None),
+                        "phone": self._get_field(user, "phone", default=None),
+                    },
+                }
+
+            return self._run_async(_search())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def resolve_channel_by_name(self, name: str) -> Dict[str, Any]:
+        """Разрешить канал по @name (https://max.ru/<name>)."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not name:
+            return {"success": False, "error": "name required"}
+        n = name.lstrip("@").strip()
+        if not n:
+            return {"success": False, "error": "name required"}
+
+        try:
+            async def _resolve():
+                await self._ensure_connected_and_session()
+                ch = await self.client.resolve_channel_by_name(n)
+                if ch is None:
+                    return {"success": False, "error": "Channel not found"}
+                return {
+                    "success": True,
+                    "channel": {
+                        "id": self._get_field(ch, "id", default=None),
+                        "title": self._get_field(ch, "title", default="") or "",
+                        "icon_url": self._get_field(ch, "base_icon_url", "baseIconUrl", default=None),
+                    },
+                }
+
+            return self._run_async(_resolve())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def create_folder(self, title: str, chat_include: Any) -> Dict[str, Any]:
+        """Создать папку (folder) для группировки чатов."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not title:
+            return {"success": False, "error": "title required"}
+        include = self._coerce_int_list(chat_include)
+        if include is None:
+            include = []
+
+        try:
+            async def _create():
+                await self._ensure_connected_and_session()
+                upd = await self.client.create_folder(title=title, chat_include=include, filters=None)
+                folder = getattr(upd, "folder", None)
+                return {
+                    "success": True,
+                    "folder": {
+                        "id": self._get_field(folder, "id", default=None),
+                        "title": self._get_field(folder, "title", default="") or "",
+                        "include": self._get_field(folder, "include", default=[]) or [],
+                    },
+                }
+
+            return self._run_async(_create())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def update_folder(self, folder_id: str, title: str, chat_include: Any = None) -> Dict[str, Any]:
+        """Обновить папку."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not folder_id:
+            return {"success": False, "error": "folder_id required"}
+        if not title:
+            return {"success": False, "error": "title required"}
+        include = self._coerce_int_list(chat_include) if chat_include is not None else None
+
+        try:
+            async def _update():
+                await self._ensure_connected_and_session()
+                upd = await self.client.update_folder(
+                    folder_id=folder_id,
+                    title=title,
+                    chat_include=include,
+                    filters=None,
+                    options=None,
+                )
+                folder = getattr(upd, "folder", None) if upd is not None else None
+                return {
+                    "success": True,
+                    "folder": {
+                        "id": self._get_field(folder, "id", default=None),
+                        "title": self._get_field(folder, "title", default="") or "",
+                        "include": self._get_field(folder, "include", default=[]) or [],
+                    },
+                }
+
+            return self._run_async(_update())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def delete_folder(self, folder_id: str) -> Dict[str, Any]:
+        """Удалить папку."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not folder_id:
+            return {"success": False, "error": "folder_id required"}
+        try:
+            async def _delete():
+                await self._ensure_connected_and_session()
+                upd = await self.client.delete_folder(folder_id=folder_id)
+                return {"success": True, "deleted": True, "folder_id": folder_id}
+
+            return self._run_async(_delete())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def join_group(self, link: str) -> Dict[str, Any]:
+        """Вступить в группу по ссылке."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not link:
+            return {"success": False, "error": "link required"}
+        try:
+            async def _join():
+                await self._ensure_connected_and_session()
+                chat = await self.client.join_group(link)
+                return {
+                    "success": True,
+                    "chat": {
+                        "id": self._get_field(chat, "id", default=None),
+                        "title": self._get_field(chat, "title", default="") or "",
+                        "type": "CHAT",
+                        "icon_url": self._get_field(chat, "base_icon_url", "baseIconUrl", default=None),
+                    },
+                }
+
+            return self._run_async(_join())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def join_channel(self, link: str) -> Dict[str, Any]:
+        """Вступить в канал по ссылке."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        if not link:
+            return {"success": False, "error": "link required"}
+        try:
+            async def _join():
+                await self._ensure_connected_and_session()
+                ch = await self.client.join_channel(link)
+                if ch is None:
+                    return {"success": False, "error": "Channel not found"}
+                return {
+                    "success": True,
+                    "chat": {
+                        "id": self._get_field(ch, "id", default=None),
+                        "title": self._get_field(ch, "title", default="") or "",
+                        "type": "CHANNEL",
+                        "icon_url": self._get_field(ch, "base_icon_url", "baseIconUrl", default=None),
+                    },
+                }
+
+            return self._run_async(_join())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def leave_group(self, chat_id: int) -> Dict[str, Any]:
+        """Покинуть группу."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        try:
+            async def _leave():
+                await self._ensure_connected_and_session()
+                await self.client.leave_group(chat_id)
+                return {"success": True, "left": True, "chat_id": chat_id}
+
+            return self._run_async(_leave())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def leave_channel(self, chat_id: int) -> Dict[str, Any]:
+        """Покинуть канал."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        try:
+            async def _leave():
+                await self._ensure_connected_and_session()
+                await self.client.leave_channel(chat_id)
+                return {"success": True, "left": True, "chat_id": chat_id}
+
+            return self._run_async(_leave())
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def read_message(self, chat_id: int, message_id: Any) -> Dict[str, Any]:
+        """Отметить сообщение как прочитанное."""
+        if self.client is None:
+            return {"success": False, "error": "Client not initialized"}
+        msg_int = self._coerce_int(message_id)
+        if msg_int is None:
+            return {"success": False, "error": "Invalid message_id"}
+        try:
+            async def _read():
+                await self._ensure_connected_and_session()
+                state = await self.client.read_message(message_id=msg_int, chat_id=chat_id)
+                return {"success": True, "state": {"chat_id": chat_id, "message_id": str(msg_int)}}
+
+            return self._run_async(_read())
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -845,4 +1691,227 @@ def stop_client() -> str:
     if _wrapper_instance is None:
         return json.dumps({"success": True, "message": "Wrapper not initialized"})
     result = _wrapper_instance.stop_client()
+    return json.dumps(result)
+
+
+def send_message(chat_id: int, text: str, reply_to: Optional[Any] = None) -> str:
+    """Отправить сообщение в чат."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.send_message(chat_id, text, reply_to)
+    return json.dumps(result)
+
+
+def send_attachment(
+    chat_id: int,
+    file_path: str,
+    attachment_type: str = "file",
+    text: str = "",
+    reply_to: Optional[Any] = None,
+    notify: bool = True,
+) -> str:
+    """Send photo/file attachment."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.send_attachment(chat_id, file_path, attachment_type, text, reply_to, notify)
+    return json.dumps(result)
+
+
+def edit_message(chat_id: int, message_id: Any, text: str) -> str:
+    """Редактировать сообщение."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.edit_message(chat_id, message_id, text)
+    return json.dumps(result)
+
+
+def delete_message(chat_id: int, message_ids: Any, for_me: bool = True) -> str:
+    """Удалить сообщения."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.delete_message(chat_id, message_ids, for_me)
+    return json.dumps(result)
+
+
+def pin_message(chat_id: int, message_id: Any, notify_pin: bool = True) -> str:
+    """Закрепить сообщение."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.pin_message(chat_id, message_id, notify_pin)
+    return json.dumps(result)
+
+
+def add_reaction(chat_id: int, message_id: Any, reaction: str) -> str:
+    """Добавить реакцию."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.add_reaction(chat_id, message_id, reaction)
+    return json.dumps(result)
+
+
+def remove_reaction(chat_id: int, message_id: Any) -> str:
+    """Удалить свою реакцию."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.remove_reaction(chat_id, message_id)
+    return json.dumps(result)
+
+
+def upload_photo(file_path: str) -> str:
+    """Загрузить фото и вернуть attach payload."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.upload_photo(file_path)
+    return json.dumps(result)
+
+
+def upload_file(file_path: str) -> str:
+    """Загрузить файл и вернуть attach payload."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.upload_file(file_path)
+    return json.dumps(result)
+
+
+def get_events_dir() -> str:
+    """Получить директорию, куда пишем события."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.get_events_dir()
+    return json.dumps(result)
+
+
+def register_event_callbacks(events_dir: Optional[str] = None) -> str:
+    """Зарегистрировать callbacks для real-time событий."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.register_event_callbacks(events_dir)
+    return json.dumps(result)
+
+
+def change_profile(first_name: str, last_name: Optional[str] = None, description: Optional[str] = None, photo_path: Optional[str] = None) -> str:
+    """Изменить профиль."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.change_profile(first_name, last_name, description, photo_path)
+    return json.dumps(result)
+
+
+def get_folders(folder_sync: int = 0) -> str:
+    """Получить папки."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.get_folders(folder_sync)
+    return json.dumps(result)
+
+
+def fetch_chats(marker: Optional[int] = None) -> str:
+    """Загрузить список чатов с сервера."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.fetch_chats(marker)
+    return json.dumps(result)
+
+
+def search_by_phone(phone: str) -> str:
+    """Поиск пользователя по телефону."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.search_by_phone(phone)
+    return json.dumps(result)
+
+
+def resolve_channel_by_name(name: str) -> str:
+    """Resolve channel by @name."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.resolve_channel_by_name(name)
+    return json.dumps(result)
+
+
+def create_folder(title: str, chat_include: Any) -> str:
+    """Create folder."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.create_folder(title, chat_include)
+    return json.dumps(result)
+
+
+def update_folder(folder_id: str, title: str, chat_include: Any = None) -> str:
+    """Update folder."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.update_folder(folder_id, title, chat_include)
+    return json.dumps(result)
+
+
+def delete_folder(folder_id: str) -> str:
+    """Delete folder."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.delete_folder(folder_id)
+    return json.dumps(result)
+
+
+def join_group(link: str) -> str:
+    """Join group by invite link."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.join_group(link)
+    return json.dumps(result)
+
+
+def join_channel(link: str) -> str:
+    """Join channel by link."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.join_channel(link)
+    return json.dumps(result)
+
+
+def leave_group(chat_id: int) -> str:
+    """Leave group."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.leave_group(chat_id)
+    return json.dumps(result)
+
+
+def leave_channel(chat_id: int) -> str:
+    """Leave channel."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.leave_channel(chat_id)
+    return json.dumps(result)
+
+
+def read_message(chat_id: int, message_id: Any) -> str:
+    """Mark message as read."""
+    global _wrapper_instance
+    if _wrapper_instance is None:
+        return json.dumps({"success": False, "error": "Wrapper not initialized"})
+    result = _wrapper_instance.read_message(chat_id, message_id)
     return json.dumps(result)
