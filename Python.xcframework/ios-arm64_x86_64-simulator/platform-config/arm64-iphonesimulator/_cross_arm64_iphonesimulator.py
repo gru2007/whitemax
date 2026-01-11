@@ -1,6 +1,5 @@
 # A site package that turns a macOS virtual environment
 # into an arm64 iphonesimulator cross-platform virtual environment
-import collections
 import platform
 import subprocess
 import sys
@@ -12,6 +11,8 @@ import sysconfig
 sys.cross_compiling = True
 sys.platform = "ios"
 sys.implementation._multiarch = "arm64-iphonesimulator"
+sys.base_prefix = sysconfig.get_config_var("prefix")
+sys.base_exec_prefix = sysconfig.get_config_var("prefix")
 
 ###########################################################################
 # subprocess module patches
@@ -35,12 +36,6 @@ def cross_uname():
         version="",
         machine="arm64",
     )
-
-
-platform.IOSVersionInfo = collections.namedtuple(
-    "IOSVersionInfo",
-    ["system", "release", "model", "is_simulator"]
-)
 
 
 def cross_ios_ver(system="", release="", model="", is_simulator=False):
@@ -73,6 +68,10 @@ def cross_get_sysconfigdata_name():
 
 sysconfig.get_platform = cross_get_platform
 sysconfig._get_sysconfigdata_name = cross_get_sysconfigdata_name
+
+# Ensure module-level values cached at time of import are updated.
+sysconfig._BASE_PREFIX = sys.base_prefix
+sysconfig._BASE_EXEC_PREFIX = sys.base_exec_prefix
 
 # Force sysconfig data to be loaded (and cached).
 sysconfig._init_config_vars()
